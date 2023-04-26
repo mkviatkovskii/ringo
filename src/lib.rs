@@ -1,1 +1,1 @@
-pub mod molecule;
+pub mod indigo;

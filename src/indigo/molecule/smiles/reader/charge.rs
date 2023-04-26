@@ -33,7 +33,7 @@ pub(crate) fn parse_charge(input: &str) -> IResult<&str, i8> {
 
 #[cfg(test)]
 mod tests {
-    use crate::molecule::smiles::reader::charge::parse_charge;
+    use crate::indigo::molecule::smiles::reader::charge::parse_charge;
     use nom::error::{Error, ErrorKind};
 
     #[test]

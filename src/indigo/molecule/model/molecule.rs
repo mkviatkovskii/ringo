@@ -1,17 +1,17 @@
-use std::alloc::System;
-use crate::molecule::model::atom::Atom;
-use crate::molecule::model::bond::Bond;
-use crate::molecule::model::element::atomic_weight;
+use crate::indigo::molecule::model::atom::Atom;
+use crate::indigo::molecule::model::bond::Bond;
+use crate::indigo::molecule::model::element::atomic_weight;
+use bit_set::BitSet;
+use bit_vec::BitVec;
 use petgraph::stable_graph::{EdgeIndex, NodeIndex, StableGraph};
 use petgraph::visit::EdgeRef;
 use petgraph::Undirected;
+use std::alloc::System;
 use std::borrow::Borrow;
 use std::collections::{BTreeSet, HashSet};
 use std::hash::Hasher;
 use std::iter::FromIterator;
 use twox_hash::XxHash64;
-use bit_set::BitSet;
-use bit_vec::BitVec;
 
 pub struct Molecule {
     graph: StableGraph<Atom, Bond, Undirected>,

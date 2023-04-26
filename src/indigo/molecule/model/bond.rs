@@ -7,5 +7,5 @@ pub enum BondOrder {
 }
 
 pub struct Bond {
-    pub order: BondOrder
+    pub order: BondOrder,
 }

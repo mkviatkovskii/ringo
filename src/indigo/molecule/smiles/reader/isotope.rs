@@ -8,7 +8,7 @@ pub(crate) fn parse_isotope(input: &str) -> IResult<&str, u8> {
 
 #[cfg(test)]
 mod tests {
-    use crate::molecule::smiles::reader::isotope::parse_isotope;
+    use crate::indigo::molecule::smiles::reader::isotope::parse_isotope;
     use nom::error::{Error, ErrorKind};
 
     #[test]
