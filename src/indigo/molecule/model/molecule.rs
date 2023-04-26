@@ -6,12 +6,10 @@ use bit_vec::BitVec;
 use petgraph::stable_graph::{EdgeIndex, NodeIndex, StableGraph};
 use petgraph::visit::EdgeRef;
 use petgraph::Undirected;
-use std::alloc::System;
 use std::borrow::Borrow;
-use std::collections::{BTreeSet, HashSet};
+use std::collections::{BTreeSet};
+use std::collections::hash_map::DefaultHasher;
 use std::hash::Hasher;
-use std::iter::FromIterator;
-use twox_hash::XxHash64;
 
 pub struct Molecule {
     graph: StableGraph<Atom, Bond, Undirected>,
@@ -101,7 +99,7 @@ fn ecfp_recursive(
         return;
     }
 
-    let mut hasher = XxHash64::with_seed(0);
+    let mut hasher = DefaultHasher::new();
 
     let atom = graph.node_weight(node).unwrap();
     hasher.write_u8(atom.element.atomic_number);

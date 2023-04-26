@@ -15,61 +15,6 @@ fn parse_cycle_digit(input: &str) -> IResult<&str, u8> {
     map_res(digit1, str::parse::<u8>)(input)
 }
 
-fn parse_molecule_old(input: &str) -> IResult<&str, Molecule> {
-    let mut molecule = Molecule::new();
-    let mut open_cycles: HashMap<u8, NodeIndex> = HashMap::new();
-
-    let mut parse_atoms_and_bonds = many0(alt((
-        map(parse_atom, |atom| (Some(atom), None, None)),
-        map(parse_bond, |bond| (None, Some(bond), None)),
-        map(parse_cycle_digit, |digit| (None, None, Some(digit))),
-    )));
-
-    let (input, atoms_and_bonds) = parse_atoms_and_bonds(input)?;
-
-    let mut prev_node = NodeIndex::end();
-    let mut prev_bond = BondOrder::Single;
-
-    let mut pending_bonds: Vec<(NodeIndex, NodeIndex, Bond)> = Vec::new();
-
-    for (atom, bond, cycle_digit) in atoms_and_bonds {
-        if let Some(digit) = cycle_digit {
-            if let Some(open_node) = open_cycles.remove(&digit) {
-                pending_bonds.push((prev_node, open_node, Bond { order: prev_bond }));
-            } else {
-                open_cycles.insert(digit, prev_node);
-            }
-        } else {
-            if let Some(atom) = atom {
-                let node = molecule.add_atom(atom);
-                if prev_node != NodeIndex::end() && bond.is_none() {
-                    pending_bonds.push((prev_node, node, Bond { order: prev_bond }));
-                }
-                prev_node = node;
-            }
-
-            if let Some(bond) = bond {
-                prev_bond = bond.order;
-            } else {
-                prev_bond = BondOrder::Single;
-            }
-        }
-    }
-
-    if !open_cycles.is_empty() {
-        return Err(nom::Err::Failure(nom::error::Error::new(
-            input,
-            ErrorKind::Verify,
-        )));
-    }
-
-    for (node1, node2, bond) in pending_bonds {
-        molecule.add_bond(node1, node2, bond);
-    }
-
-    Ok((input, molecule))
-}
-
 fn parse_molecule(input: &str) -> IResult<&str, Molecule> {
     let mut molecule = Molecule::new();
     let mut open_cycles: HashMap<u8, NodeIndex> = HashMap::new();
