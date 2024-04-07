@@ -38,6 +38,18 @@ impl Molecule {
         return self.graph.edge_weight(edge);
     }
 
+    pub fn get_bond_by_atoms(&self, ni1: NodeIndex, ni2: NodeIndex) -> Option<&Bond> {
+        let e = self.graph.find_edge_undirected(ni1, ni2);
+        if e.is_none() {
+            return None;
+        }
+        return self.graph.edge_weight(e.unwrap().0);
+    }
+
+    pub fn has_bond(&self, ni1: NodeIndex, ni2: NodeIndex) -> bool {
+        return self.graph.find_edge_undirected(ni1, ni2).is_some();
+    }
+
     pub fn count_atoms(&self) -> usize {
         return self.graph.node_count();
     }

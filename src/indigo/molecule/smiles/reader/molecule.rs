@@ -19,6 +19,7 @@ fn parse_molecule(input: &str) -> IResult<&str, Molecule> {
     let mut molecule = Molecule::new();
     let mut open_cycles: HashMap<u8, NodeIndex> = HashMap::new();
     let mut stack: Vec<(NodeIndex, BondOrder)> = Vec::new();
+    let mut pending_bonds: Vec<(NodeIndex, NodeIndex, Bond)> = Vec::new();
 
     let mut parse_atoms_and_bonds = many0(alt((
         map(parse_atom, |atom| (Some(atom), None, None, None)),
@@ -33,7 +34,6 @@ fn parse_molecule(input: &str) -> IResult<&str, Molecule> {
     let mut prev_node = NodeIndex::end();
     let mut prev_bond = BondOrder::Single;
 
-    let mut pending_bonds: Vec<(NodeIndex, NodeIndex, Bond)> = Vec::new();
 
     for (atom, bond, cycle_digit, open_paren) in atoms_and_bonds {
         if let Some(open) = open_paren {
@@ -54,6 +54,7 @@ fn parse_molecule(input: &str) -> IResult<&str, Molecule> {
         } else if let Some(digit) = cycle_digit {
             if let Some(open_node) = open_cycles.remove(&digit) {
                 pending_bonds.push((prev_node, open_node, Bond { order: prev_bond }));
+                prev_bond = BondOrder::Single;
             } else {
                 open_cycles.insert(digit, prev_node);
             }
@@ -132,6 +133,33 @@ mod tests {
     }
 
     #[test]
+    fn parse_molecule_branch() {
+        let m = parse_molecule("C(O)N").unwrap().1;
+        assert_eq!(m.count_atoms(), 3);
+        assert_eq!(m.count_bonds(), 2);
+        assert_eq!(
+            m.get_atom(NodeIndex::new(0)).unwrap().element.atomic_number,
+            6
+        );
+        assert_eq!(
+            m.get_atom(NodeIndex::new(1)).unwrap().element.atomic_number,
+            8
+        );
+        assert_eq!(
+            m.get_atom(NodeIndex::new(2)).unwrap().element.atomic_number,
+            7
+        );
+        assert_eq!(
+            m.get_bond(EdgeIndex::new(0)).unwrap().order,
+            BondOrder::Single
+        );
+        assert_eq!(
+            m.get_bond(EdgeIndex::new(1)).unwrap().order,
+            BondOrder::Single
+        );
+    }
+
+    #[test]
     fn parse_molecule_c1cc1() {
         let m = parse_molecule("C1P=N#1").unwrap().1;
         assert_eq!(m.count_atoms(), 3);
@@ -175,6 +203,172 @@ mod tests {
                 .atomic_number,
             7
         );
+    }
+
+    #[test]
+    fn parse_molecule_branch_double_bond() {
+        let m = parse_molecule("C(=O)N").unwrap().1;
+        assert_eq!(m.count_atoms(), 3);
+        assert_eq!(m.count_bonds(), 2);
+        assert_eq!(
+            m.get_atom(NodeIndex::new(0)).unwrap().element.atomic_number,
+            6
+        );
+        assert_eq!(
+            m.get_atom(NodeIndex::new(1)).unwrap().element.atomic_number,
+            8
+        );
+        assert_eq!(
+            m.get_atom(NodeIndex::new(2)).unwrap().element.atomic_number,
+            7
+        );
+        assert_eq!(
+            m.get_bond_by_atoms(NodeIndex::new(0), NodeIndex::new(1)).unwrap().order,
+            BondOrder::Double
+        );
+        assert_eq!(
+            m.get_bond_by_atoms(NodeIndex::new(0), NodeIndex::new(2)).unwrap().order,
+            BondOrder::Single
+        );
+    }
+
+    #[test]
+    fn parse_molecule_branch_double_bonds() {
+        let m = parse_molecule("C(=O)=N").unwrap().1;
+        assert_eq!(m.count_atoms(), 3);
+        assert_eq!(m.count_bonds(), 2);
+        assert_eq!(
+            m.get_atom(NodeIndex::new(0)).unwrap().element.atomic_number,
+            6
+        );
+        assert_eq!(
+            m.get_atom(NodeIndex::new(1)).unwrap().element.atomic_number,
+            8
+        );
+        assert_eq!(
+            m.get_atom(NodeIndex::new(2)).unwrap().element.atomic_number,
+            7
+        );
+        assert_eq!(
+            m.get_bond_by_atoms(NodeIndex::new(0), NodeIndex::new(1)).unwrap().order,
+            BondOrder::Double
+        );
+        assert_eq!(
+            m.get_bond_by_atoms(NodeIndex::new(0), NodeIndex::new(2)).unwrap().order,
+            BondOrder::Double
+        );
+    }
+
+    #[test]
+    fn parse_molecule_branch_recursive() {
+        let m = parse_molecule("C(=S(=O)P)N").unwrap().1;
+        assert_eq!(m.count_atoms(), 5);
+        assert_eq!(m.count_bonds(), 4);
+        assert_eq!(
+            m.get_atom(NodeIndex::new(0)).unwrap().element.atomic_number,
+            6
+        );
+        assert_eq!(
+            m.get_atom(NodeIndex::new(1)).unwrap().element.atomic_number,
+            16
+        );
+        assert_eq!(
+            m.get_atom(NodeIndex::new(2)).unwrap().element.atomic_number,
+            8
+        );
+        assert_eq!(
+            m.get_atom(NodeIndex::new(3)).unwrap().element.atomic_number,
+            15
+        );
+        assert_eq!(
+            m.get_atom(NodeIndex::new(4)).unwrap().element.atomic_number,
+            7
+        );
+        assert_eq!(
+            m.get_bond_by_atoms(NodeIndex::new(0), NodeIndex::new(1)).unwrap().order,
+            BondOrder::Double
+        );
+        assert_eq!(
+            m.get_bond_by_atoms(NodeIndex::new(1), NodeIndex::new(2)).unwrap().order,
+            BondOrder::Double
+        );
+        assert_eq!(
+            m.get_bond_by_atoms(NodeIndex::new(1), NodeIndex::new(3)).unwrap().order,
+            BondOrder::Single
+        );
+        assert_eq!(
+            m.get_bond_by_atoms(NodeIndex::new(0), NodeIndex::new(4)).unwrap().order,
+            BondOrder::Single
+        );
+    }
+
+    #[test]
+    fn parse_molecule_cycle_double() {
+        let m = parse_molecule("N1OC=1S").unwrap().1;
+        assert_eq!(m.count_atoms(), 4);
+        assert_eq!(m.count_bonds(), 4);
+        assert_eq!(
+            m.get_atom(NodeIndex::new(0)).unwrap().element.atomic_number,
+            7
+        );
+        assert_eq!(
+            m.get_atom(NodeIndex::new(1)).unwrap().element.atomic_number,
+            8
+        );
+        assert_eq!(
+            m.get_atom(NodeIndex::new(2)).unwrap().element.atomic_number,
+            6
+        );
+        assert_eq!(
+            m.get_atom(NodeIndex::new(3)).unwrap().element.atomic_number,
+            16
+        );
+        assert!(m.has_bond(NodeIndex::new(0), NodeIndex::new(1)));
+        assert!(m.get_bond_by_atoms(NodeIndex::new(0), NodeIndex::new(1)).unwrap().order == BondOrder::Single);
+        assert!(m.has_bond(NodeIndex::new(1), NodeIndex::new(2)));
+        assert!(m.get_bond_by_atoms(NodeIndex::new(1), NodeIndex::new(2)).unwrap().order == BondOrder::Single);
+        assert!(m.has_bond(NodeIndex::new(0), NodeIndex::new(2)));
+        assert!(m.get_bond_by_atoms(NodeIndex::new(0), NodeIndex::new(2)).unwrap().order == BondOrder::Double);
+        assert!(m.has_bond(NodeIndex::new(2), NodeIndex::new(3)));
+        assert!(m.get_bond_by_atoms(NodeIndex::new(2), NodeIndex::new(3)).unwrap().order == BondOrder::Single);
+    }
+
+
+    #[test]
+    fn parse_molecule_cycle_branch() {
+        let m = parse_molecule("N1C(=P)S=1O").unwrap().1;
+        assert_eq!(m.count_atoms(), 5);
+        assert_eq!(m.count_bonds(), 5);
+        assert_eq!(
+            m.get_atom(NodeIndex::new(0)).unwrap().element.atomic_number,
+            7
+        );
+        assert_eq!(
+            m.get_atom(NodeIndex::new(1)).unwrap().element.atomic_number,
+            6
+        );
+        assert_eq!(
+            m.get_atom(NodeIndex::new(2)).unwrap().element.atomic_number,
+            15
+        );
+        assert_eq!(
+            m.get_atom(NodeIndex::new(3)).unwrap().element.atomic_number,
+            16
+        );
+        assert_eq!(
+            m.get_atom(NodeIndex::new(4)).unwrap().element.atomic_number,
+            8
+        );
+        assert!(m.has_bond(NodeIndex::new(0), NodeIndex::new(1)));
+        assert!(m.get_bond_by_atoms(NodeIndex::new(0), NodeIndex::new(1)).unwrap().order == BondOrder::Single);
+        assert!(m.has_bond(NodeIndex::new(1), NodeIndex::new(2)));
+        assert!(m.get_bond_by_atoms(NodeIndex::new(1), NodeIndex::new(2)).unwrap().order == BondOrder::Double);
+        assert!(m.has_bond(NodeIndex::new(1), NodeIndex::new(3)));
+        assert!(m.get_bond_by_atoms(NodeIndex::new(1), NodeIndex::new(3)).unwrap().order == BondOrder::Single);
+        assert!(m.has_bond(NodeIndex::new(3), NodeIndex::new(4)));
+        assert!(m.get_bond_by_atoms(NodeIndex::new(3), NodeIndex::new(4)).unwrap().order == BondOrder::Single);
+        assert!(m.has_bond(NodeIndex::new(3), NodeIndex::new(0)));
+        assert!(m.get_bond_by_atoms(NodeIndex::new(3), NodeIndex::new(0)).unwrap().order == BondOrder::Double);
     }
 
     #[test]
