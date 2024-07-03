@@ -1,2 +1,2 @@
-# Indigo Rust
-Implementation of Indigo cheminformatics algorithms in Rust.
+# Ringo
+Implementation of file-based chemical search engine Bingo on Rust.
