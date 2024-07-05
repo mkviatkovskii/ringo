@@ -26,5 +26,5 @@ fn index(smiles_file: &str) -> Vec<IndexItem> {
 #[test]
 fn test_index() {
     let result = index("molecules.smi");
-    assert_eq!(result.len(), 1);
+    assert_eq!(result.len(), 2);
 }
