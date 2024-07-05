@@ -1,4 +1,3 @@
-use std::arch::x86_64::_popcnt64;
 use bit_vec::BitVec;
 
 pub fn tanimoto_vec(a: &BitVec, b: &BitVec) -> f32 {
@@ -20,12 +19,12 @@ pub fn tanimoto_vec(a: &BitVec, b: &BitVec) -> f32 {
 }
 
 pub unsafe fn tanimoto_array(a: &[u64; 4], b: &[u64; 4]) -> f32 {
-    let mut dividend: i32 = 0;
-    let mut divisor: i32 = 0;
+    let mut dividend: u32 = 0;
+    let mut divisor: u32 = 0;
 
     for i in 0..4 {
-        dividend += _popcnt64((a[i] & b[i]) as i64);
-        divisor += _popcnt64((a[i] | b[i]) as i64);
+        dividend += ((a[i] & b[i]) as i64).count_ones();
+        divisor += ((a[i] | b[i]) as i64).count_ones();
     }
     return dividend as f32 / divisor as f32;
 }
