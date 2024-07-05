@@ -28,7 +28,7 @@ pub(crate) fn parse_hydrogens(input: &str) -> IResult<&str, u8> {
 
 #[cfg(test)]
 mod tests {
-    use crate::indigo::molecule::smiles::reader::hydrogens::parse_hydrogens;
+    use crate::ringo::molecule::smiles::reader::hydrogens::parse_hydrogens;
     use nom::error::{Error, ErrorKind};
 
     #[test]

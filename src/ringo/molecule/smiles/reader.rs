@@ -4,4 +4,4 @@ mod charge;
 mod element;
 mod hydrogens;
 mod isotope;
-mod molecule;
+pub(crate) mod molecule;

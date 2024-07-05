@@ -1,7 +1,7 @@
-use crate::indigo::molecule::model::bond::{Bond, BondOrder};
-use crate::indigo::molecule::model::molecule::Molecule;
-use crate::indigo::molecule::smiles::reader::atom::parse_atom;
-use crate::indigo::molecule::smiles::reader::bond::parse_bond;
+use crate::ringo::molecule::model::bond::{Bond, BondOrder};
+use crate::ringo::molecule::model::molecule::Molecule;
+use crate::ringo::molecule::smiles::reader::atom::parse_atom;
+use crate::ringo::molecule::smiles::reader::bond::parse_bond;
 use nom::branch::alt;
 use nom::character::complete::{char, digit1};
 use nom::combinator::{map, map_res};
@@ -15,7 +15,7 @@ fn parse_cycle_digit(input: &str) -> IResult<&str, u8> {
     map_res(digit1, str::parse::<u8>)(input)
 }
 
-fn parse_molecule(input: &str) -> IResult<&str, Molecule> {
+pub(crate) fn parse_molecule(input: &str) -> IResult<&str, Molecule> {
     let mut molecule = Molecule::new();
     let mut open_cycles: HashMap<u8, NodeIndex> = HashMap::new();
     let mut stack: Vec<(NodeIndex, BondOrder)> = Vec::new();
@@ -91,8 +91,8 @@ fn parse_molecule(input: &str) -> IResult<&str, Molecule> {
 
 #[cfg(test)]
 mod tests {
-    use crate::indigo::molecule::model::bond::BondOrder;
-    use crate::indigo::molecule::smiles::reader::molecule::parse_molecule;
+    use crate::ringo::molecule::model::bond::BondOrder;
+    use crate::ringo::molecule::smiles::reader::molecule::parse_molecule;
     use petgraph::stable_graph::{EdgeIndex, NodeIndex};
 
     #[test]

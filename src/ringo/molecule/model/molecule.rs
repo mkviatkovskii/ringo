@@ -1,6 +1,6 @@
-use crate::indigo::molecule::model::atom::Atom;
-use crate::indigo::molecule::model::bond::Bond;
-use crate::indigo::molecule::model::element::atomic_weight;
+use crate::ringo::molecule::model::atom::Atom;
+use crate::ringo::molecule::model::bond::Bond;
+use crate::ringo::molecule::model::element::atomic_weight;
 use bit_set::BitSet;
 use bit_vec::BitVec;
 use petgraph::stable_graph::{EdgeIndex, NodeIndex, StableGraph};
@@ -9,7 +9,9 @@ use petgraph::Undirected;
 use std::borrow::Borrow;
 use std::collections::{BTreeSet};
 use std::collections::hash_map::DefaultHasher;
+use std::fmt::Debug;
 use std::hash::Hasher;
+use crate::ringo::molecule::smiles::reader::molecule::parse_molecule;
 
 pub struct Molecule {
     graph: StableGraph<Atom, Bond, Undirected>,
@@ -133,4 +135,13 @@ fn ecfp_recursive(
 
         ecfp_recursive(graph, radius, depth + 1, target, fp, fp_length);
     }
+}
+
+
+#[test]
+fn test_ecfp() {
+    let ecfp_ibuprofen = parse_molecule("CC(C)CC1=CC=C(C=C1)C(C)C(=O)O").unwrap().1.ecfp(6, 128);
+    let paracetamol = parse_molecule("CC(=O)NC1=CC=C(C=C1)O").unwrap().1.ecfp(6, 128);
+    println!("{:?}", ecfp_ibuprofen);
+    println!("{:?}", paracetamol);
 }

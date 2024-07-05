@@ -1,17 +1,18 @@
 [package]
 authors = ["Mikhail Kviatkovskii <mikhail.kviatkovskii@pm.me>"]
-description = "Rust implementation of Indigo cheminformatics toolkit"
+description = "File-based chemical search engine on Rust"
 edition = "2021"
-homepage = "https://github.com/mkviatkovskii/indigo-rust"
-keywords = ["cheminformatics", "smiles", "fingerprint", "indigo", "rust"]
+homepage = "https://github.com/mkviatkovskii/ringo"
+keywords = ["cheminformatics", "smiles", "fingerprint", "search", "rust"]
 license = "Apache-2.0"
-name = "indigo-rust"
+name = "ringo"
 readme = "README.md"
-repository = "https://github.com/mkviatkovskii/indigo-rust.git"
+repository = "https://github.com/mkviatkovskii/ringo.git"
 version = "0.0.1"
 
 [dependencies]
-bit-set = "0.5.3"
-bit-vec = "0.6.3"
+bitcode = "0.6.0"
+bit-set = "0.6.0"
+bit-vec = "0.7.0"
 nom = "7.1.3"
-petgraph = "0.6.3"
+petgraph = "0.6.5"

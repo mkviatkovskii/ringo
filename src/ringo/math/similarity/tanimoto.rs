@@ -33,7 +33,7 @@ pub unsafe fn tanimoto_array(a: &[u64; 4], b: &[u64; 4]) -> f32 {
 #[cfg(test)]
 mod tests {
     use bit_vec::BitVec;
-    use crate::indigo::math::similarity::tanimoto::{tanimoto_array, tanimoto_vec};
+    use crate::ringo::math::similarity::tanimoto::{tanimoto_array, tanimoto_vec};
 
     #[test]
     fn test_tanimoto_vec_033() {

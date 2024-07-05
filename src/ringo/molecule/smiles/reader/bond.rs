@@ -1,4 +1,4 @@
-use crate::indigo::molecule::model::bond::{Bond, BondOrder};
+use crate::ringo::molecule::model::bond::{Bond, BondOrder};
 use nom::branch::alt;
 use nom::bytes::complete::tag;
 use nom::combinator::map;
@@ -16,8 +16,8 @@ pub(crate) fn parse_bond(input: &str) -> IResult<&str, Bond> {
 
 #[cfg(test)]
 mod tests {
-    use crate::indigo::molecule::model::bond::BondOrder;
-    use crate::indigo::molecule::smiles::reader::bond::parse_bond;
+    use crate::ringo::molecule::model::bond::BondOrder;
+    use crate::ringo::molecule::smiles::reader::bond::parse_bond;
 
     #[test]
     fn parse_bond_empty() {

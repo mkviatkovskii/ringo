@@ -1,9 +1,9 @@
-use crate::indigo::molecule::model::atom::Atom;
-use crate::indigo::molecule::model::element::Element;
-use crate::indigo::molecule::smiles::reader::charge::parse_charge;
-use crate::indigo::molecule::smiles::reader::element::parse_element;
-use crate::indigo::molecule::smiles::reader::hydrogens::parse_hydrogens;
-use crate::indigo::molecule::smiles::reader::isotope::parse_isotope;
+use crate::ringo::molecule::model::atom::Atom;
+use crate::ringo::molecule::model::element::Element;
+use crate::ringo::molecule::smiles::reader::charge::parse_charge;
+use crate::ringo::molecule::smiles::reader::element::parse_element;
+use crate::ringo::molecule::smiles::reader::hydrogens::parse_hydrogens;
+use crate::ringo::molecule::smiles::reader::isotope::parse_isotope;
 use nom::combinator::opt;
 use nom::IResult;
 
@@ -48,7 +48,7 @@ pub(crate) fn parse_atom(input: &str) -> IResult<&str, Atom> {
 
 #[cfg(test)]
 mod tests {
-    use crate::indigo::molecule::smiles::reader::atom::parse_atom;
+    use crate::ringo::molecule::smiles::reader::atom::parse_atom;
 
     fn do_test_parse_atom(input: &str, atomic_number: u8, charge: i8, hs: u8, isotope: u8) {
         let (remaining_input, atom) = parse_atom(input).unwrap();
