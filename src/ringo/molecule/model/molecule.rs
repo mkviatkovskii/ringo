@@ -11,6 +11,7 @@ use std::collections::{BTreeSet};
 use std::collections::hash_map::DefaultHasher;
 use std::fmt::Debug;
 use std::hash::Hasher;
+use crate::ringo::math::similarity::tanimoto::tanimoto_vec;
 use crate::ringo::molecule::smiles::reader::molecule::parse_molecule;
 
 pub struct Molecule {
@@ -92,7 +93,7 @@ impl Molecule {
         let mut fp = BitSet::new();
 
         for node in self.graph.node_indices() {
-            ecfp_recursive(&self.graph, radius, 1, node, &mut fp, fp_length);
+            ecfp_recursive(&self.graph, radius, 1, node, &mut fp, fp_length, &mut DefaultHasher::new());
         }
 
         BitVec::from_fn(fp_length, |idx| fp.contains(idx))
@@ -106,14 +107,12 @@ fn ecfp_recursive(
     node: NodeIndex,
     fp: &mut BitSet,
     fp_length: usize,
+    hasher: &mut DefaultHasher,
 ) {
-    //println!("ecfp_recursive({}, {}, {})", radius, depth, node.index());
 
     if depth > radius {
         return;
     }
-
-    let mut hasher = DefaultHasher::new();
 
     let atom = graph.node_weight(node).unwrap();
     hasher.write_u8(atom.element.atomic_number);
@@ -121,7 +120,8 @@ fn ecfp_recursive(
     hasher.write_i8(atom.charge);
     hasher.write_u8(atom.hs);
 
-    fp.insert(hasher.finish() as usize % fp_length);
+    let value = hasher.clone().finish();
+    fp.insert(value as usize % fp_length);
 
     for edge in graph.edges(node) {
         let bond = edge.weight();
@@ -133,15 +133,15 @@ fn ecfp_recursive(
             edge.source()
         };
 
-        ecfp_recursive(graph, radius, depth + 1, target, fp, fp_length);
+        ecfp_recursive(graph, radius, depth + 1, target, fp, fp_length, hasher);
     }
 }
 
 
 #[test]
 fn test_ecfp() {
-    let ecfp_ibuprofen = parse_molecule("CC(C)CC1=CC=C(C=C1)C(C)C(=O)O").unwrap().1.ecfp(6, 128);
-    let paracetamol = parse_molecule("CC(=O)NC1=CC=C(C=C1)O").unwrap().1.ecfp(6, 128);
-    println!("{:?}", ecfp_ibuprofen);
-    println!("{:?}", paracetamol);
+    let ecfp_ibuprofen = parse_molecule("CC(C)CC1=CC=C(C=C1)C(C)C(=O)O").unwrap().1.ecfp(2, 128);
+    let ecfp_naproxen = parse_molecule("CC(C1=CC2=C(C=C1)C=C(C=C2)OC)C(=O)O").unwrap().1.ecfp(2, 128);
+    let sim = tanimoto_vec(&ecfp_ibuprofen, &ecfp_naproxen);
+    assert!(0.53 < sim && sim < 0.54);
 }

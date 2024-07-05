@@ -387,7 +387,7 @@ mod tests {
         for smiles in ["C", "CC", "C1COCNC1", "CN1C=NC2=C1C(=O)N(C(=O)N2C)C"] {
             println!("{}: ", smiles);
             let m = parse_molecule(smiles).unwrap().1;
-            let result = m.ecfp(2, 128);
+            let result = m.ecfp(2, 512);
             for bit in result {
                 print!("{}", if bit { 1 } else { 0 });
             }
