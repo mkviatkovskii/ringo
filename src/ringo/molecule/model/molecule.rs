@@ -1,9 +1,8 @@
+use crate::ringo::fingerprint::fingerprint::{Fingerprint, FINGERPRINT_SIZE};
 use crate::ringo::math::similarity::tanimoto::tanimoto_bitset;
 use crate::ringo::molecule::model::atom::Atom;
 use crate::ringo::molecule::model::bond::Bond;
-use crate::ringo::molecule::model::element::atomic_weight;
 use crate::ringo::molecule::smiles::reader::molecule::parse_molecule;
-use crate::ringo::ringo::fingerprint::{Fingerprint, FINGERPRINT_SIZE};
 use fixedbitset::FixedBitSet;
 use petgraph::stable_graph::{EdgeIndex, NodeIndex, StableGraph};
 use petgraph::visit::EdgeRef;
@@ -82,7 +81,7 @@ impl Molecule {
     pub fn weight(&self) -> f64 {
         let mut weight: f64 = 0.0;
         for atom in self.graph.node_weights() {
-            weight += atomic_weight(atom.element.borrow())
+            weight += atom.element.atomic_weight();
         }
         weight
     }

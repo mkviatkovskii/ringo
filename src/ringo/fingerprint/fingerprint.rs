@@ -32,7 +32,7 @@ impl<'de> bincode::BorrowDecode<'de> for Fingerprint {
 
 #[cfg(test)]
 mod tests {
-    use crate::ringo::ringo::fingerprint::{Fingerprint, FINGERPRINT_SIZE};
+    use crate::ringo::fingerprint::fingerprint::{Fingerprint, FINGERPRINT_SIZE};
     use fixedbitset::FixedBitSet;
 
     #[test]
@@ -44,10 +44,9 @@ mod tests {
         let mut buf = vec![0u8; FINGERPRINT_SIZE / 8];
         bincode::encode_into_slice(&fp, buf.as_mut_slice(), bincode::config::standard()).unwrap();
 
-        let decoded: Fingerprint =
-            bincode::decode_from_slice(&buf, bincode::config::standard())
-                .unwrap()
-                .0;
+        let decoded: Fingerprint = bincode::decode_from_slice(&buf, bincode::config::standard())
+            .unwrap()
+            .0;
         assert_eq!(decoded.0.ones().collect::<Vec<usize>>(), vec![1, 17]);
     }
 }
