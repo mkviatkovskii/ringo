@@ -42,7 +42,7 @@ mod tests {
         fp.0.set(17, true);
 
         let mut buf = vec![0u8; FINGERPRINT_SIZE / 8];
-        let encoded = bincode::encode_into_slice(&fp, buf.as_mut_slice(), bincode::config::standard()).unwrap();
+        bincode::encode_into_slice(&fp, buf.as_mut_slice(), bincode::config::standard()).unwrap();
 
         let decoded: Fingerprint =
             bincode::decode_from_slice(&buf, bincode::config::standard())

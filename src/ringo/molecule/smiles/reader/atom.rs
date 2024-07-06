@@ -11,8 +11,7 @@ pub(crate) fn parse_atom(input: &str) -> IResult<&str, Atom> {
     let mut isotope: Option<u8> = None;
     let mut charge: Option<i8> = None;
     let mut hs: Option<u8> = None;
-    let mut atomic_number = 0;
-
+    let atomic_number: u8;
     let (mut input, sqro_found) = opt(nom::character::complete::char('['))(input)?;
     if sqro_found.is_some() {
         (input, isotope) = opt(parse_isotope)(input).unwrap_or((input, None));
@@ -21,7 +20,7 @@ pub(crate) fn parse_atom(input: &str) -> IResult<&str, Atom> {
     if sqro_found.is_some() {
         (input, hs) = opt(parse_hydrogens)(input).unwrap_or((input, None));
         (input, charge) = opt(parse_charge)(input).unwrap_or((input, None));
-        let mut sqrc_found: Option<char> = None;
+        let sqrc_found: Option<char>;
         (input, sqrc_found) = opt(nom::character::complete::char(']'))(input)?;
         if (sqro_found.is_some() && sqrc_found.is_none())
             || (sqro_found.is_none() && sqrc_found.is_some())

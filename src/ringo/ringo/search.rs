@@ -25,8 +25,8 @@ pub fn similarity_search(smiles_file: &str, query: &str, min_similarity: f32, li
     let mut buf_reader = BufReader::new(fif);
 
     let mut results = Vec::new();
-    
-    for i in 0..index_count {
+
+    for _ in 0..index_count {
         // read index item from file
         let mut buf = vec![0u8; index_item_size as usize];
         buf_reader.read_exact(&mut buf).unwrap();
@@ -49,9 +49,13 @@ pub fn similarity_search(smiles_file: &str, query: &str, min_similarity: f32, li
                 line: line,
                 similarity: similarity
             });
+
+            if results.len() >= limit {
+                break;
+            }
         }
     }
-    
+
     results
 }
 
@@ -59,6 +63,9 @@ pub fn similarity_search(smiles_file: &str, query: &str, min_similarity: f32, li
 fn test_similarity_search() {
     let results = similarity_search("molecules.smi", "CC(C)CC1=CC=C(C=C1)C(C)C(=O)O", 0.7, 100);
     assert_eq!(results.len(), 1);
+    assert!(results[0].line.starts_with("CC(C)CC1=CC=C(C=C1)C(C)C(=O)O"));
+    assert_eq!(results[0].similarity, 1.0);
     let results = similarity_search("molecules.smi", "CC(C)CC1=CC=C(C=C1)C(C)C(=O)O", 0.5, 100);
     assert_eq!(results.len(), 2);
+
 }

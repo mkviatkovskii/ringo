@@ -16,7 +16,7 @@ fn index(smiles_file: &str) {
 
     // open binary file for index
     let mut offset = 0;
-    let mut fo = File::create(smiles_file.to_owned() + ".fp");
+    let fo = File::create(smiles_file.to_owned() + ".fp");
     let mut writer = BufWriter::new(fo.unwrap());
 
     for line in std::io::BufReader::new(fi).lines() {
