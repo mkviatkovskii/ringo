@@ -3,7 +3,7 @@ use crate::ringo::molecule::model::atom::Atom;
 use crate::ringo::molecule::model::bond::Bond;
 use crate::ringo::molecule::model::element::atomic_weight;
 use crate::ringo::molecule::smiles::reader::molecule::parse_molecule;
-use crate::ringo::ringo::fingerprint::Fingerprint;
+use crate::ringo::ringo::fingerprint::{Fingerprint, FINGERPRINT_SIZE};
 use fixedbitset::FixedBitSet;
 use petgraph::stable_graph::{EdgeIndex, NodeIndex, StableGraph};
 use petgraph::visit::EdgeRef;
@@ -89,7 +89,7 @@ impl Molecule {
 
     // TODO: move to Descriptors crate
     pub fn ecfp(&self, radius: usize, fp_length: usize) -> Fingerprint {
-        let mut fp = FixedBitSet::new();
+        let mut fp = FixedBitSet::with_capacity(FINGERPRINT_SIZE);
 
         for node in self.graph.node_indices() {
             ecfp_recursive(

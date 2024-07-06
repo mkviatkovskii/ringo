@@ -41,9 +41,11 @@ mod tests {
         fp.0.set(1, true);
         fp.0.set(17, true);
 
-        let encoded = bincode::encode_to_vec(&fp, bincode::config::standard()).unwrap();
+        let mut buf = vec![0u8; FINGERPRINT_SIZE / 8];
+        let encoded = bincode::encode_into_slice(&fp, buf.as_mut_slice(), bincode::config::standard()).unwrap();
+
         let decoded: Fingerprint =
-            bincode::decode_from_slice(&encoded, bincode::config::standard())
+            bincode::decode_from_slice(&buf, bincode::config::standard())
                 .unwrap()
                 .0;
         assert_eq!(decoded.0.ones().collect::<Vec<usize>>(), vec![1, 17]);
