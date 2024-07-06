@@ -1,7 +1,7 @@
-use std::fs::File;
-use std::io::{BufRead};
 use crate::ringo::molecule::smiles::reader::molecule::parse_molecule;
 use crate::ringo::ringo::index_item::IndexItem;
+use std::fs::File;
+use std::io::BufRead;
 
 fn index(smiles_file: &str) {
     // open file for reading
@@ -13,11 +13,13 @@ fn index(smiles_file: &str) {
     for line in std::io::BufReader::new(fi).lines() {
         let line = line.unwrap();
         let molecule = parse_molecule(&line).unwrap().1;
-        IndexItem{position: offset, fingerprint: molecule.ecfp(2, 512)};
+        IndexItem {
+            position: offset,
+            fingerprint: molecule.ecfp(2, 512),
+        };
         offset += line.len() + 1;
     }
 }
-
 
 #[test]
 fn test_index() {

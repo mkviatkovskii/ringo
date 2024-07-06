@@ -1,17 +1,17 @@
+use crate::ringo::math::similarity::tanimoto::tanimoto_bitset;
 use crate::ringo::molecule::model::atom::Atom;
 use crate::ringo::molecule::model::bond::Bond;
 use crate::ringo::molecule::model::element::atomic_weight;
+use crate::ringo::molecule::smiles::reader::molecule::parse_molecule;
 use crate::ringo::ringo::fingerprint::Fingerprint;
+use fixedbitset::FixedBitSet;
 use petgraph::stable_graph::{EdgeIndex, NodeIndex, StableGraph};
 use petgraph::visit::EdgeRef;
 use petgraph::Undirected;
 use std::borrow::Borrow;
-use std::collections::{BTreeSet};
 use std::collections::hash_map::DefaultHasher;
+use std::collections::BTreeSet;
 use std::hash::Hasher;
-use fixedbitset::FixedBitSet;
-use crate::ringo::math::similarity::tanimoto::tanimoto_bitset;
-use crate::ringo::molecule::smiles::reader::molecule::parse_molecule;
 
 pub struct Molecule {
     graph: StableGraph<Atom, Bond, Undirected>,
@@ -92,7 +92,15 @@ impl Molecule {
         let mut fp = FixedBitSet::new();
 
         for node in self.graph.node_indices() {
-            ecfp_recursive(&self.graph, radius, 1, node, &mut fp, fp_length, &mut DefaultHasher::new());
+            ecfp_recursive(
+                &self.graph,
+                radius,
+                1,
+                node,
+                &mut fp,
+                fp_length,
+                &mut DefaultHasher::new(),
+            );
         }
 
         Fingerprint(fp)
@@ -108,7 +116,6 @@ fn ecfp_recursive(
     fp_length: usize,
     hasher: &mut DefaultHasher,
 ) {
-
     if depth > radius {
         return;
     }
@@ -136,11 +143,16 @@ fn ecfp_recursive(
     }
 }
 
-
 #[test]
 fn test_ecfp() {
-    let ecfp_ibuprofen = parse_molecule("CC(C)CC1=CC=C(C=C1)C(C)C(=O)O").unwrap().1.ecfp(2, 128);
-    let ecfp_naproxen = parse_molecule("CC(C1=CC2=C(C=C1)C=C(C=C2)OC)C(=O)O").unwrap().1.ecfp(2, 128);
+    let ecfp_ibuprofen = parse_molecule("CC(C)CC1=CC=C(C=C1)C(C)C(=O)O")
+        .unwrap()
+        .1
+        .ecfp(2, 128);
+    let ecfp_naproxen = parse_molecule("CC(C1=CC2=C(C=C1)C=C(C=C2)OC)C(=O)O")
+        .unwrap()
+        .1
+        .ecfp(2, 128);
     let sim = tanimoto_bitset(&ecfp_ibuprofen.0, &ecfp_naproxen.0);
     assert!(0.53 < sim && sim < 0.54);
 }

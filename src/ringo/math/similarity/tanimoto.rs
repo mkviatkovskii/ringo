@@ -3,13 +3,14 @@ use fixedbitset::FixedBitSet;
 pub fn tanimoto_bitset(a: &FixedBitSet, b: &FixedBitSet) -> f32 {
     let mut and_ = a.clone();
     and_.intersect_with(b);
-    return and_.count_ones(..) as f32 / (a.count_ones(..) + b.count_ones(..) - and_.count_ones(..)) as f32;
+    return and_.count_ones(..) as f32
+        / (a.count_ones(..) + b.count_ones(..) - and_.count_ones(..)) as f32;
 }
 
 #[cfg(test)]
 mod tests {
+    use crate::ringo::math::similarity::tanimoto::tanimoto_bitset;
     use fixedbitset::FixedBitSet;
-    use crate::ringo::math::similarity::tanimoto::{tanimoto_bitset};
 
     #[test]
     fn test_tanimoto_bitset_033() {

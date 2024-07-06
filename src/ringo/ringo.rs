@@ -1,4 +1,4 @@
-mod index;
-mod search;
-mod index_item;
 pub(crate) mod fingerprint;
+mod index;
+mod index_item;
+mod search;

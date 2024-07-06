@@ -34,7 +34,6 @@ pub(crate) fn parse_molecule(input: &str) -> IResult<&str, Molecule> {
     let mut prev_node = NodeIndex::end();
     let mut prev_bond = BondOrder::Single;
 
-
     for (atom, bond, cycle_digit, open_paren) in atoms_and_bonds {
         if let Some(open) = open_paren {
             if open {
@@ -223,11 +222,15 @@ mod tests {
             7
         );
         assert_eq!(
-            m.get_bond_by_atoms(NodeIndex::new(0), NodeIndex::new(1)).unwrap().order,
+            m.get_bond_by_atoms(NodeIndex::new(0), NodeIndex::new(1))
+                .unwrap()
+                .order,
             BondOrder::Double
         );
         assert_eq!(
-            m.get_bond_by_atoms(NodeIndex::new(0), NodeIndex::new(2)).unwrap().order,
+            m.get_bond_by_atoms(NodeIndex::new(0), NodeIndex::new(2))
+                .unwrap()
+                .order,
             BondOrder::Single
         );
     }
@@ -250,11 +253,15 @@ mod tests {
             7
         );
         assert_eq!(
-            m.get_bond_by_atoms(NodeIndex::new(0), NodeIndex::new(1)).unwrap().order,
+            m.get_bond_by_atoms(NodeIndex::new(0), NodeIndex::new(1))
+                .unwrap()
+                .order,
             BondOrder::Double
         );
         assert_eq!(
-            m.get_bond_by_atoms(NodeIndex::new(0), NodeIndex::new(2)).unwrap().order,
+            m.get_bond_by_atoms(NodeIndex::new(0), NodeIndex::new(2))
+                .unwrap()
+                .order,
             BondOrder::Double
         );
     }
@@ -285,19 +292,27 @@ mod tests {
             7
         );
         assert_eq!(
-            m.get_bond_by_atoms(NodeIndex::new(0), NodeIndex::new(1)).unwrap().order,
+            m.get_bond_by_atoms(NodeIndex::new(0), NodeIndex::new(1))
+                .unwrap()
+                .order,
             BondOrder::Double
         );
         assert_eq!(
-            m.get_bond_by_atoms(NodeIndex::new(1), NodeIndex::new(2)).unwrap().order,
+            m.get_bond_by_atoms(NodeIndex::new(1), NodeIndex::new(2))
+                .unwrap()
+                .order,
             BondOrder::Double
         );
         assert_eq!(
-            m.get_bond_by_atoms(NodeIndex::new(1), NodeIndex::new(3)).unwrap().order,
+            m.get_bond_by_atoms(NodeIndex::new(1), NodeIndex::new(3))
+                .unwrap()
+                .order,
             BondOrder::Single
         );
         assert_eq!(
-            m.get_bond_by_atoms(NodeIndex::new(0), NodeIndex::new(4)).unwrap().order,
+            m.get_bond_by_atoms(NodeIndex::new(0), NodeIndex::new(4))
+                .unwrap()
+                .order,
             BondOrder::Single
         );
     }
@@ -324,15 +339,34 @@ mod tests {
             16
         );
         assert!(m.has_bond(NodeIndex::new(0), NodeIndex::new(1)));
-        assert!(m.get_bond_by_atoms(NodeIndex::new(0), NodeIndex::new(1)).unwrap().order == BondOrder::Single);
+        assert!(
+            m.get_bond_by_atoms(NodeIndex::new(0), NodeIndex::new(1))
+                .unwrap()
+                .order
+                == BondOrder::Single
+        );
         assert!(m.has_bond(NodeIndex::new(1), NodeIndex::new(2)));
-        assert!(m.get_bond_by_atoms(NodeIndex::new(1), NodeIndex::new(2)).unwrap().order == BondOrder::Single);
+        assert!(
+            m.get_bond_by_atoms(NodeIndex::new(1), NodeIndex::new(2))
+                .unwrap()
+                .order
+                == BondOrder::Single
+        );
         assert!(m.has_bond(NodeIndex::new(0), NodeIndex::new(2)));
-        assert!(m.get_bond_by_atoms(NodeIndex::new(0), NodeIndex::new(2)).unwrap().order == BondOrder::Double);
+        assert!(
+            m.get_bond_by_atoms(NodeIndex::new(0), NodeIndex::new(2))
+                .unwrap()
+                .order
+                == BondOrder::Double
+        );
         assert!(m.has_bond(NodeIndex::new(2), NodeIndex::new(3)));
-        assert!(m.get_bond_by_atoms(NodeIndex::new(2), NodeIndex::new(3)).unwrap().order == BondOrder::Single);
+        assert!(
+            m.get_bond_by_atoms(NodeIndex::new(2), NodeIndex::new(3))
+                .unwrap()
+                .order
+                == BondOrder::Single
+        );
     }
-
 
     #[test]
     fn parse_molecule_cycle_branch() {
@@ -360,15 +394,40 @@ mod tests {
             8
         );
         assert!(m.has_bond(NodeIndex::new(0), NodeIndex::new(1)));
-        assert!(m.get_bond_by_atoms(NodeIndex::new(0), NodeIndex::new(1)).unwrap().order == BondOrder::Single);
+        assert!(
+            m.get_bond_by_atoms(NodeIndex::new(0), NodeIndex::new(1))
+                .unwrap()
+                .order
+                == BondOrder::Single
+        );
         assert!(m.has_bond(NodeIndex::new(1), NodeIndex::new(2)));
-        assert!(m.get_bond_by_atoms(NodeIndex::new(1), NodeIndex::new(2)).unwrap().order == BondOrder::Double);
+        assert!(
+            m.get_bond_by_atoms(NodeIndex::new(1), NodeIndex::new(2))
+                .unwrap()
+                .order
+                == BondOrder::Double
+        );
         assert!(m.has_bond(NodeIndex::new(1), NodeIndex::new(3)));
-        assert!(m.get_bond_by_atoms(NodeIndex::new(1), NodeIndex::new(3)).unwrap().order == BondOrder::Single);
+        assert!(
+            m.get_bond_by_atoms(NodeIndex::new(1), NodeIndex::new(3))
+                .unwrap()
+                .order
+                == BondOrder::Single
+        );
         assert!(m.has_bond(NodeIndex::new(3), NodeIndex::new(4)));
-        assert!(m.get_bond_by_atoms(NodeIndex::new(3), NodeIndex::new(4)).unwrap().order == BondOrder::Single);
+        assert!(
+            m.get_bond_by_atoms(NodeIndex::new(3), NodeIndex::new(4))
+                .unwrap()
+                .order
+                == BondOrder::Single
+        );
         assert!(m.has_bond(NodeIndex::new(3), NodeIndex::new(0)));
-        assert!(m.get_bond_by_atoms(NodeIndex::new(3), NodeIndex::new(0)).unwrap().order == BondOrder::Double);
+        assert!(
+            m.get_bond_by_atoms(NodeIndex::new(3), NodeIndex::new(0))
+                .unwrap()
+                .order
+                == BondOrder::Double
+        );
     }
 
     #[test]
