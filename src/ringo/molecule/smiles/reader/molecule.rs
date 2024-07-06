@@ -388,10 +388,7 @@ mod tests {
             println!("{}: ", smiles);
             let m = parse_molecule(smiles).unwrap().1;
             let result = m.ecfp(2, 512);
-            for bit in result {
-                print!("{}", if bit { 1 } else { 0 });
-            }
-            println!("");
+            println!("{:?}", result);
         }
     }
 }
