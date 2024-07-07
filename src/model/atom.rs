@@ -1,3 +1,4 @@
+use crate::model::chirality::Chirality;
 use crate::model::element::Element;
 
 #[derive(Hash, Eq, PartialEq, Debug)]
@@ -6,6 +7,7 @@ pub struct Atom {
     pub isotope: u8,
     pub charge: i8,
     pub hs: u8,
+    pub chirality: Chirality,
 }
 
 #[cfg(test)]
@@ -19,6 +21,7 @@ mod tests {
             isotope: 12,
             charge: 0,
             hs: 0,
+            chirality: Chirality::Unspecified,
         };
         assert_eq!(atom.element, Element { atomic_number: 6 });
         assert_eq!(atom.isotope, 12);

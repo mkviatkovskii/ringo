@@ -93,6 +93,7 @@ mod tests {
     use crate::io::smiles::reader::molecule::parse_molecule;
     use crate::model::bond::BondOrder;
     use petgraph::stable_graph::{EdgeIndex, NodeIndex};
+    use crate::model::chirality::Chirality;
 
     #[test]
     fn parse_molecule_empty() {
@@ -394,40 +395,25 @@ mod tests {
             8
         );
         assert!(m.has_bond(NodeIndex::new(0), NodeIndex::new(1)));
-        assert!(
-            m.get_bond_by_atoms(NodeIndex::new(0), NodeIndex::new(1))
-                .unwrap()
-                .order
-                == BondOrder::Single
-        );
+        assert_eq!(m.get_bond_by_atoms(NodeIndex::new(0), NodeIndex::new(1))
+                       .unwrap()
+                       .order, BondOrder::Single);
         assert!(m.has_bond(NodeIndex::new(1), NodeIndex::new(2)));
-        assert!(
-            m.get_bond_by_atoms(NodeIndex::new(1), NodeIndex::new(2))
-                .unwrap()
-                .order
-                == BondOrder::Double
-        );
+        assert_eq!(m.get_bond_by_atoms(NodeIndex::new(1), NodeIndex::new(2))
+                       .unwrap()
+                       .order, BondOrder::Double);
         assert!(m.has_bond(NodeIndex::new(1), NodeIndex::new(3)));
-        assert!(
-            m.get_bond_by_atoms(NodeIndex::new(1), NodeIndex::new(3))
-                .unwrap()
-                .order
-                == BondOrder::Single
-        );
+        assert_eq!(m.get_bond_by_atoms(NodeIndex::new(1), NodeIndex::new(3))
+                       .unwrap()
+                       .order, BondOrder::Single);
         assert!(m.has_bond(NodeIndex::new(3), NodeIndex::new(4)));
-        assert!(
-            m.get_bond_by_atoms(NodeIndex::new(3), NodeIndex::new(4))
-                .unwrap()
-                .order
-                == BondOrder::Single
-        );
+        assert_eq!(m.get_bond_by_atoms(NodeIndex::new(3), NodeIndex::new(4))
+                       .unwrap()
+                       .order, BondOrder::Single);
         assert!(m.has_bond(NodeIndex::new(3), NodeIndex::new(0)));
-        assert!(
-            m.get_bond_by_atoms(NodeIndex::new(3), NodeIndex::new(0))
-                .unwrap()
-                .order
-                == BondOrder::Double
-        );
+        assert_eq!(m.get_bond_by_atoms(NodeIndex::new(3), NodeIndex::new(0))
+                       .unwrap()
+                       .order, BondOrder::Double);
     }
 
     #[test]
@@ -437,15 +423,14 @@ mod tests {
 
 
     #[test]
-    fn test_parse_molecule_alanine() {
+    fn test_parse_molecule_chiral_anticlockwise() {
         assert!(!parse_molecule("N[C@H](C)C(=O)O").is_err());
     }
 
     #[test]
-    fn test_parse_molecule_chiral_down() {
+    fn test_parse_molecule_chiral_clockwise() {
         assert!(!parse_molecule("N[C@@](F)(C)C(=O)O").is_err());
     }
-
 
     #[test]
     fn test_molecule_weight() {
@@ -454,12 +439,8 @@ mod tests {
     }
 
     #[test]
-    fn test_ecfp() {
-        for smiles in ["C", "CC", "C1COCNC1", "CN1C=NC2=C1C(=O)N(C(=O)N2C)C"] {
-            println!("{}: ", smiles);
-            let m = parse_molecule(smiles).unwrap().1;
-            let result = m.ecfp(2, 512);
-            println!("{:?}", result);
-        }
+    fn test_molecule_chiral() {
+        let m = parse_molecule("N[C@H](C)C(=O)O").unwrap().1;
+        assert_eq!(m.get_atom(NodeIndex::new(1)).unwrap().chirality, Chirality::Anticlockwise);
     }
 }
