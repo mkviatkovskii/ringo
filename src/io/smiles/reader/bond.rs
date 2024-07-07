@@ -1,23 +1,25 @@
-use crate::model::bond::{Bond, BondOrder};
+use crate::model::bond::{Bond, BondDirection, BondOrder};
 use nom::branch::alt;
 use nom::bytes::complete::tag;
 use nom::combinator::map;
 use nom::IResult;
 
 pub fn parse_bond(input: &str) -> IResult<&str, Bond> {
-    let (input, bond_order) = alt((
-        map(tag("="), |_| BondOrder::Double),
-        map(tag("#"), |_| BondOrder::Triple),
-        map(tag(":"), |_| BondOrder::Aromatic),
-        map(tag("-"), |_| BondOrder::Single),
+    let (input, (bond_order, bond_direction)) = alt((
+        map(tag("="), |_| (BondOrder::Double, BondDirection::Unspecified)),
+        map(tag("#"), |_| (BondOrder::Triple, BondDirection::Unspecified)),
+        map(tag(":"), |_| (BondOrder::Aromatic, BondDirection::Unspecified)),
+        map(tag("-"), |_| (BondOrder::Single, BondDirection::Unspecified)),
+        map(tag("/"), |_| (BondOrder::Single, BondDirection::Up)),
+        map(tag(r"\"), |_| (BondOrder::Single, BondDirection::Down)),
     ))(input)?;
-    Ok((input, Bond { order: bond_order }))
+    Ok((input, Bond { order: bond_order, direction: bond_direction}))
 }
 
 #[cfg(test)]
 mod tests {
     use crate::io::smiles::reader::bond::parse_bond;
-    use crate::model::bond::BondOrder;
+    use crate::model::bond::{BondDirection, BondOrder};
 
     #[test]
     fn parse_bond_empty() {
@@ -42,5 +44,19 @@ mod tests {
     #[test]
     fn parse_bond_aromatic() {
         assert_eq!(parse_bond(":").unwrap().1.order, BondOrder::Aromatic);
+    }
+
+    #[test]
+    fn parse_bond_cistrans_up() {
+        let bond = parse_bond("/").unwrap().1;
+        assert_eq!(bond.order, BondOrder::Single);
+        assert_eq!(bond.direction, BondDirection::Up);
+    }
+
+    #[test]
+    fn parse_bond_cistrans_down() {
+        let bond = parse_bond(r"\").unwrap().1;
+        assert_eq!(bond.order, BondOrder::Single);
+        assert_eq!(bond.direction, BondDirection::Down);
     }
 }

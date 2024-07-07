@@ -1,6 +1,6 @@
 use crate::io::smiles::reader::atom::parse_atom;
 use crate::io::smiles::reader::bond::parse_bond;
-use crate::model::bond::{Bond, BondOrder};
+use crate::model::bond::{Bond, BondDirection, BondOrder};
 use crate::model::molecule::Molecule;
 use nom::branch::alt;
 use nom::character::complete::{char, digit1};
@@ -32,12 +32,12 @@ pub fn parse_molecule(input: &str) -> IResult<&str, Molecule> {
     let (input, atoms_and_bonds) = parse_atoms_and_bonds(input)?;
 
     let mut prev_node = NodeIndex::end();
-    let mut prev_bond = BondOrder::Single;
+    let mut prev_bond_order = BondOrder::Single;
 
     for (atom, bond, cycle_digit, open_paren) in atoms_and_bonds {
         if let Some(open) = open_paren {
             if open {
-                stack.push((prev_node, prev_bond));
+                stack.push((prev_node, prev_bond_order));
             } else {
                 if stack.is_empty() {
                     return Err(nom::Err::Failure(nom::error::Error::new(
@@ -48,12 +48,12 @@ pub fn parse_molecule(input: &str) -> IResult<&str, Molecule> {
 
                 let (node, bond) = stack.pop().unwrap();
                 prev_node = node;
-                prev_bond = bond;
+                prev_bond_order = bond;
             }
         } else if let Some(digit) = cycle_digit {
             if let Some(open_node) = open_cycles.remove(&digit) {
-                pending_bonds.push((prev_node, open_node, Bond { order: prev_bond }));
-                prev_bond = BondOrder::Single;
+                pending_bonds.push((prev_node, open_node, Bond { order: prev_bond_order, direction: BondDirection::Unspecified }));
+                prev_bond_order = BondOrder::Single;
             } else {
                 open_cycles.insert(digit, prev_node);
             }
@@ -61,15 +61,15 @@ pub fn parse_molecule(input: &str) -> IResult<&str, Molecule> {
             if let Some(atom) = atom {
                 let node = molecule.add_atom(atom);
                 if prev_node != NodeIndex::end() && bond.is_none() {
-                    pending_bonds.push((prev_node, node, Bond { order: prev_bond }));
+                    pending_bonds.push((prev_node, node, Bond { order: prev_bond_order, direction: BondDirection::Unspecified }));
                 }
                 prev_node = node;
             }
 
             if let Some(bond) = bond {
-                prev_bond = bond.order;
+                prev_bond_order = bond.order;
             } else {
-                prev_bond = BondOrder::Single;
+                prev_bond_order = BondOrder::Single;
             }
         }
     }
@@ -431,18 +431,30 @@ mod tests {
     }
 
     #[test]
-    fn parse_molecule_c1cc() {
+    fn test_parse_molecule_c1cc() {
         assert!(parse_molecule("C1CC").is_err())
     }
 
+
     #[test]
-    fn molecule_weight() {
+    fn test_parse_molecule_alanine() {
+        assert!(!parse_molecule("N[C@H](C)C(=O)O").is_err());
+    }
+
+    #[test]
+    fn test_parse_molecule_chiral_down() {
+        assert!(!parse_molecule("N[C@@](F)(C)C(=O)O").is_err());
+    }
+
+
+    #[test]
+    fn test_molecule_weight() {
         let m = parse_molecule("C([H])([H])([H])(H)").unwrap().1;
         assert_eq!(m.weight(), 16.0423);
     }
 
     #[test]
-    fn ecfp() {
+    fn test_ecfp() {
         for smiles in ["C", "CC", "C1COCNC1", "CN1C=NC2=C1C(=O)N(C(=O)N2C)C"] {
             println!("{}: ", smiles);
             let m = parse_molecule(smiles).unwrap().1;
