@@ -1,7 +1,7 @@
-use crate::molecule::model::bond::{Bond, BondOrder};
-use crate::molecule::model::molecule::Molecule;
-use crate::molecule::smiles::reader::atom::parse_atom;
-use crate::molecule::smiles::reader::bond::parse_bond;
+use crate::io::smiles::reader::atom::parse_atom;
+use crate::io::smiles::reader::bond::parse_bond;
+use crate::model::bond::{Bond, BondOrder};
+use crate::model::molecule::Molecule;
 use nom::branch::alt;
 use nom::character::complete::{char, digit1};
 use nom::combinator::{map, map_res};
@@ -90,8 +90,8 @@ pub fn parse_molecule(input: &str) -> IResult<&str, Molecule> {
 
 #[cfg(test)]
 mod tests {
-    use crate::ringo::molecule::model::bond::BondOrder;
-    use crate::ringo::molecule::smiles::reader::molecule::parse_molecule;
+    use crate::io::smiles::reader::molecule::parse_molecule;
+    use crate::model::bond::BondOrder;
     use petgraph::stable_graph::{EdgeIndex, NodeIndex};
 
     #[test]

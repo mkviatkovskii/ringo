@@ -1,4 +1,4 @@
-use crate::molecule::model::element::Element;
+use crate::model::element::Element;
 
 #[derive(Hash, Eq, PartialEq, Debug)]
 pub struct Atom {

@@ -1,6 +1,6 @@
-use crate::math::similarity::tanimoto::tanimoto_bitset;
-use crate::molecule::smiles::reader::molecule::parse_molecule;
 use crate::db::index_item::IndexItem;
+use crate::io::smiles::reader::molecule::parse_molecule;
+use crate::math::similarity::tanimoto::tanimoto_bitset;
 use std::fs::File;
 use std::io::{BufRead, BufReader, Read, Seek};
 
@@ -65,10 +65,6 @@ pub fn similarity_search(
     }
 
     results
-}
-
-fn main() {
-    println!("db-search");
 }
 
 #[cfg(test)]

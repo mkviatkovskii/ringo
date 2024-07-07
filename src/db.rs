@@ -1,4 +1,3 @@
-pub mod index_item;
 pub mod index;
+pub mod index_item;
 pub mod search;
-pub mod fingerprint;

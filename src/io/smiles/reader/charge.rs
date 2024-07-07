@@ -33,7 +33,7 @@ pub fn parse_charge(input: &str) -> IResult<&str, i8> {
 
 #[cfg(test)]
 mod tests {
-    use crate::ringo::molecule::smiles::reader::charge::parse_charge;
+    use crate::io::smiles::reader::charge::parse_charge;
     use nom::error::{Error, ErrorKind};
 
     #[test]

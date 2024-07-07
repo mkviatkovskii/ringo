@@ -1,10 +1,9 @@
-
+use crate::db::index_item::IndexItem;
+use crate::io::smiles::reader::molecule::parse_molecule;
+use crate::model::fingerprint::FINGERPRINT_SIZE;
 use bincode::encode_into_slice;
 use std::fs::File;
 use std::io::{BufRead, BufWriter, Write};
-use crate::db::index_item::IndexItem;
-use crate::db::fingerprint::FINGERPRINT_SIZE;
-use crate::molecule::smiles::reader::molecule::parse_molecule;
 
 #[cfg(windows)]
 const LINE_ENDING_LENGTH: usize = 2;
@@ -35,7 +34,6 @@ pub fn index_file(smiles_file: &str) {
         writer.write(&buf).unwrap();
     }
 }
-
 
 #[cfg(test)]
 mod test {

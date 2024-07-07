@@ -35,7 +35,7 @@ pub fn parse_element(input: &str) -> IResult<&str, u8> {
 
 #[cfg(test)]
 mod tests {
-    use crate::ringo::molecule::smiles::reader::element::parse_element;
+    use crate::io::smiles::reader::element::parse_element;
     use nom::error::{Error, ErrorKind};
 
     #[test]

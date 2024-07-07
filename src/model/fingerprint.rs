@@ -32,7 +32,7 @@ impl<'de> bincode::BorrowDecode<'de> for Fingerprint {
 
 #[cfg(test)]
 mod tests {
-    use crate::db::fingerprint::{Fingerprint, FINGERPRINT_SIZE};
+    use crate::model::fingerprint::{Fingerprint, FINGERPRINT_SIZE};
     use fixedbitset::FixedBitSet;
 
     #[test]

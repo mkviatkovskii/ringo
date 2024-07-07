@@ -96,7 +96,7 @@ impl Element {
 
 #[cfg(test)]
 mod test {
-    use crate::ringo::molecule::model::element::Element;
+    use crate::model::element::Element;
 
     #[test]
     fn test_element() {

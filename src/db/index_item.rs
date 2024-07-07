@@ -1,4 +1,4 @@
-use crate::db::fingerprint::Fingerprint;
+use crate::model::fingerprint::Fingerprint;
 use bincode::{Decode, Encode};
 
 #[derive(Debug, Encode, Decode)]
@@ -9,11 +9,11 @@ pub struct IndexItem {
 
 #[cfg(test)]
 mod tests {
+    use crate::db::index_item::IndexItem;
+    use crate::model::fingerprint::Fingerprint;
     use bincode::config::standard;
     use bincode::{decode_from_slice, encode_to_vec};
     use fixedbitset::FixedBitSet;
-    use crate::db::fingerprint::Fingerprint;
-    use crate::db::index_item::IndexItem;
 
     #[test]
     fn test_index_item_encode_decode() {
