@@ -510,6 +510,11 @@ mod tests {
         // caffeine C8H10N4O2
         let m = parse_molecule("CN1C=NC2=C1C(=O)N(C(=O)N2C)C").unwrap().1;
         assert!((m.weight() - 194.194).abs() < 1e-9);
+        // ammonium NH4 and the methylene radical CH2
+        let m = parse_molecule("[NH4+]").unwrap().1;
+        assert!((m.weight() - 18.039).abs() < 1e-9);
+        let m = parse_molecule("[CH2]").unwrap().1;
+        assert!((m.weight() - 14.027).abs() < 1e-9);
     }
 
     #[test]
@@ -527,6 +532,11 @@ mod tests {
         assert_eq!(hs("CCl"), [3, 0]);
         // bracket atoms take only their written hydrogens
         assert_eq!(hs("[CH3]C"), [0, 3]);
+        // charges and radicals need brackets, so valence never adds hydrogens to them
+        assert_eq!(hs("[NH4+]"), [0]);
+        assert_eq!(hs("C[O-]"), [3, 0]);
+        assert_eq!(hs("[CH2]"), [0]);
+        assert_eq!(hs("[CH2]C"), [0, 3]);
         // next valence when the first one is exceeded
         assert_eq!(hs("CS(=O)C"), [3, 0, 0, 3]);
         assert_eq!(hs("OP(=O)(O)O"), [1, 0, 0, 1, 1]);
