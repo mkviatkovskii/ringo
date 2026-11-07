@@ -10,9 +10,19 @@ pub struct Molecule {
     // crate-only: the reader computes implicit hydrogens once, so outside edits would leave
     // them stale
     pub(crate) graph: StableGraph<Atom, Bond, Undirected>,
+    pub(crate) stereo: Vec<crate::model::stereo::AtomStereo>,
+    pub(crate) bond_stereo: Vec<crate::model::stereo::DoubleBondStereo>,
 }
 
 impl Molecule {
+    pub fn double_bond_stereo(&self) -> &[crate::model::stereo::DoubleBondStereo] {
+        &self.bond_stereo
+    }
+    /// Explicitly supplied configurations. Absence means unspecified.
+    pub fn atom_stereo(&self) -> &[crate::model::stereo::AtomStereo] {
+        &self.stereo
+    }
+
     pub fn new() -> Molecule {
         Self::default()
     }

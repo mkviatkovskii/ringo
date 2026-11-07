@@ -1,9 +1,11 @@
-use crate::io::smiles::reader::atom::parse_atom;
+use crate::io::smiles::reader::atom::{parse_atom, Chirality};
 use crate::io::smiles::reader::bond::parse_bond;
 use crate::model::atom::Atom;
 use crate::model::bond::{Bond, BondOrder};
 use crate::model::molecule::Molecule;
+use crate::model::stereo::{AtomStereo, Configuration, Ligand};
 use petgraph::stable_graph::NodeIndex;
+use petgraph::visit::IntoEdgeReferences;
 use std::collections::HashMap;
 use winnow::combinator::{alt, preceded, repeat};
 use winnow::error::{ContextError, ErrMode};
@@ -12,9 +14,9 @@ use winnow::stream::AsChar;
 use winnow::token::take_while;
 
 enum Token {
-    /// The atom, and whether it was written in brackets.
-    Atom(Atom, bool),
-    Bond(BondOrder),
+    /// The atom, whether it was written in brackets, and its chirality tag.
+    Atom(Atom, bool, Option<Chirality>),
+    Bond(BondOrder, Option<bool>),
     Ring(u8),
     Open,
     Close,
@@ -108,36 +110,99 @@ pub fn parse_molecule(input: &str) -> ModalResult<(&str, Molecule)> {
     Ok((rest, molecule))
 }
 
+struct OpenRing {
+    node: NodeIndex,
+    bond: Option<BondOrder>,
+    direction: Option<bool>,
+    slot: usize,
+}
+#[derive(Default)]
+struct RingClosures {
+    open: HashMap<u8, OpenRing>,
+}
+impl RingClosures {
+    fn accept(
+        &mut self,
+        digit: u8,
+        prev_node: NodeIndex,
+        (prev_bond, prev_direction): (Option<BondOrder>, Option<bool>),
+        pending_bonds: &mut Vec<PendingBond>,
+        ligand_order: &mut [Vec<Option<NodeIndex>>],
+        directions: &mut Vec<(NodeIndex, NodeIndex, bool)>,
+    ) -> ModalResult<()> {
+        // a ring bond needs an atom to start from or end at
+        if prev_node == NodeIndex::end() {
+            return Err(ErrMode::Cut(ContextError::new()));
+        }
+        if let Some(OpenRing {
+            node: open_node,
+            bond: open_bond,
+            direction: open_direction,
+            slot,
+        }) = self.open.remove(&digit)
+        {
+            // "C11" would bond an atom to itself, "C1C1" bond two atoms twice
+            let bonded = |(a, b, _): &PendingBond| {
+                (*a, *b) == (prev_node, open_node) || (*a, *b) == (open_node, prev_node)
+            };
+            if open_node == prev_node || pending_bonds.iter().any(bonded) {
+                return Err(ErrMode::Cut(ContextError::new()));
+            }
+            // the bond symbol may stand at either end: "C=1CCCCC1" or "C1CCCCC=1",
+            // but not two different ones: "C=1CCCCC-1"
+            if open_bond.is_some() && prev_bond.is_some() && open_bond != prev_bond {
+                return Err(ErrMode::Cut(ContextError::new()));
+            }
+            if let (Some(a), Some(b)) = (open_direction, prev_direction) {
+                if a == b {
+                    return Err(ErrMode::Cut(ContextError::new()));
+                }
+            }
+            if let Some(direction) = open_direction.or(prev_direction.map(|d: bool| !d)) {
+                directions.push((open_node, prev_node, direction));
+            }
+            ligand_order[open_node.index()][slot] = Some(prev_node);
+            ligand_order[prev_node.index()].push(Some(open_node));
+            pending_bonds.push((prev_node, open_node, prev_bond.or(open_bond)));
+        } else {
+            let slot = ligand_order[prev_node.index()].len();
+            ligand_order[prev_node.index()].push(None);
+            self.open.insert(
+                digit,
+                OpenRing {
+                    node: prev_node,
+                    bond: prev_bond,
+                    direction: prev_direction,
+                    slot,
+                },
+            );
+        }
+
+        Ok(())
+    }
+}
+
 fn parse_molecule_next(input: &mut &str) -> ModalResult<Molecule> {
     let mut molecule = Molecule::new();
-    let mut open_cycles: HashMap<u8, (NodeIndex, Option<BondOrder>)> = HashMap::new();
+    let mut ligand_order: Vec<Vec<Option<NodeIndex>>> = Vec::new();
+    let mut chiral_atoms = Vec::new();
+    let mut rings = RingClosures::default();
     let mut stack: Vec<NodeIndex> = Vec::new();
     let mut pending_bonds: Vec<PendingBond> = Vec::new();
     let mut organic_nodes: Vec<(NodeIndex, u8, bool)> = Vec::new();
 
-    let tokens: Vec<Token> = repeat(
-        0..,
-        alt((
-            parse_atom
-                .with_taken()
-                .map(|(atom, taken)| Token::Atom(atom, taken.starts_with('['))),
-            parse_bond.map(|bond| Token::Bond(bond.order)),
-            parse_cycle_digit.map(Token::Ring),
-            '('.map(|_| Token::Open),
-            ')'.map(|_| Token::Close),
-            '.'.map(|_| Token::Dot),
-        )),
-    )
-    .parse_next(input)?;
+    let tokens = parse_tokens(input)?;
 
     let mut prev_node = NodeIndex::end();
     let mut prev_bond = None;
+    let mut prev_direction = None;
+    let mut directions = Vec::new();
     let mut after_dot = false;
     let mut after_open = false;
 
     for token in tokens {
         // a branch must hold something: "C()C" is not a molecule
-        if after_open && !matches!(token, Token::Atom(..) | Token::Bond(_) | Token::Dot) {
+        if after_open && !matches!(token, Token::Atom(..) | Token::Bond(..) | Token::Dot) {
             return Err(ErrMode::Cut(ContextError::new()));
         }
         after_open = matches!(token, Token::Open);
@@ -153,7 +218,7 @@ fn parse_molecule_next(input: &mut &str) -> ModalResult<Molecule> {
         }
         match token {
             // "=C", "C.=C", ".C" and "(C)C" have no atom before the bond, dot or branch
-            Token::Bond(_) | Token::Dot | Token::Open if prev_node == NodeIndex::end() => {
+            Token::Bond(..) | Token::Dot | Token::Open if prev_node == NodeIndex::end() => {
                 return Err(ErrMode::Cut(ContextError::new()));
             }
             Token::Open => stack.push(prev_node),
@@ -164,44 +229,45 @@ fn parse_molecule_next(input: &mut &str) -> ModalResult<Molecule> {
                 prev_node = node;
             }
             Token::Ring(digit) => {
-                // a ring bond needs an atom to start from or end at
-                if prev_node == NodeIndex::end() {
-                    return Err(ErrMode::Cut(ContextError::new()));
-                }
-                if let Some((open_node, open_bond)) = open_cycles.remove(&digit) {
-                    // "C11" would bond an atom to itself, "C1C1" bond two atoms twice
-                    let bonded = |(a, b, _): &PendingBond| {
-                        (*a, *b) == (prev_node, open_node) || (*a, *b) == (open_node, prev_node)
-                    };
-                    if open_node == prev_node || pending_bonds.iter().any(bonded) {
-                        return Err(ErrMode::Cut(ContextError::new()));
-                    }
-                    // the bond symbol may stand at either end: "C=1CCCCC1" or "C1CCCCC=1",
-                    // but not two different ones: "C=1CCCCC-1"
-                    if open_bond.is_some() && prev_bond.is_some() && open_bond != prev_bond {
-                        return Err(ErrMode::Cut(ContextError::new()));
-                    }
-                    pending_bonds.push((prev_node, open_node, prev_bond.or(open_bond)));
-                } else {
-                    open_cycles.insert(digit, (prev_node, prev_bond));
-                }
+                rings.accept(
+                    digit,
+                    prev_node,
+                    (prev_bond, prev_direction),
+                    &mut pending_bonds,
+                    &mut ligand_order,
+                    &mut directions,
+                )?;
                 prev_bond = None;
+                prev_direction = None;
             }
-            Token::Atom(atom, bracket) => {
+            Token::Atom(atom, bracket, chirality) => {
                 let atomic_number = atom.element.atomic_number;
                 let aromatic = atom.aromatic;
                 let node = molecule.add_atom(atom);
+                ligand_order.push(Vec::new());
+                if let Some(chirality) = chirality {
+                    chiral_atoms.push((node, chirality, prev_node != NodeIndex::end()));
+                }
                 if !bracket {
                     organic_nodes.push((node, atomic_number, aromatic));
                 }
                 if prev_node != NodeIndex::end() {
+                    if let Some(direction) = prev_direction {
+                        directions.push((prev_node, node, direction));
+                    }
+                    ligand_order[prev_node.index()].push(Some(node));
+                    ligand_order[node.index()].push(Some(prev_node));
                     pending_bonds.push((prev_node, node, prev_bond));
                 }
                 prev_node = node;
                 prev_bond = None;
+                prev_direction = None;
                 after_dot = false;
             }
-            Token::Bond(order) => prev_bond = Some(order),
+            Token::Bond(order, direction) => {
+                prev_bond = Some(order);
+                prev_direction = direction;
+            }
             // the next atom starts a new, unbonded component
             Token::Dot => {
                 prev_node = NodeIndex::end();
@@ -210,10 +276,45 @@ fn parse_molecule_next(input: &mut &str) -> ModalResult<Molecule> {
         }
     }
 
-    if !open_cycles.is_empty() || !stack.is_empty() || prev_bond.is_some() || after_dot {
+    if !rings.open.is_empty() || !stack.is_empty() || prev_bond.is_some() || after_dot {
         return Err(ErrMode::Cut(ContextError::new()));
     }
 
+    finish_molecule(
+        molecule,
+        pending_bonds,
+        organic_nodes,
+        chiral_atoms,
+        &ligand_order,
+        &directions,
+    )
+}
+
+fn parse_tokens(input: &mut &str) -> ModalResult<Vec<Token>> {
+    repeat(
+        0..,
+        alt((
+            parse_atom.map(|(atom, bracket, stereo)| Token::Atom(atom, bracket, stereo)),
+            parse_bond.map(|bond| Token::Bond(bond.order, None)),
+            '/'.map(|_| Token::Bond(BondOrder::Single, Some(true))),
+            '\\'.map(|_| Token::Bond(BondOrder::Single, Some(false))),
+            parse_cycle_digit.map(Token::Ring),
+            '('.map(|_| Token::Open),
+            ')'.map(|_| Token::Close),
+            '.'.map(|_| Token::Dot),
+        )),
+    )
+    .parse_next(input)
+}
+
+fn finish_molecule(
+    mut molecule: Molecule,
+    pending_bonds: Vec<PendingBond>,
+    organic_nodes: Vec<(NodeIndex, u8, bool)>,
+    chiral_atoms: Vec<(NodeIndex, Chirality, bool)>,
+    ligand_order: &[Vec<Option<NodeIndex>>],
+    directions: &[(NodeIndex, NodeIndex, bool)],
+) -> ModalResult<Molecule> {
     add_bonds(&mut molecule, pending_bonds);
 
     for (node, atomic_number, aromatic) in organic_nodes {
@@ -225,7 +326,107 @@ fn parse_molecule_next(input: &mut &str) -> ModalResult<Molecule> {
     // after the hydrogens: perception moves electrons around, not hydrogens
     molecule.perceive_aromaticity();
 
+    for (node, chirality, has_previous) in chiral_atoms {
+        let atom = &molecule.graph[node];
+        if atom.hs > 6
+            || (atom.hs > 1 && matches!(chirality, Chirality::Default(_) | Chirality::TH(_)))
+        {
+            return Err(ErrMode::Cut(ContextError::new()));
+        }
+        let mut ligands: Vec<Ligand> = ligand_order[node.index()]
+            .iter()
+            .map(|other| {
+                other
+                    .map(Ligand::Atom)
+                    .ok_or_else(|| ErrMode::Cut(ContextError::new()))
+            })
+            .collect::<ModalResult<_>>()?;
+        for _ in 0..atom.hs {
+            ligands.insert(usize::from(has_previous), Ligand::Hydrogen);
+        }
+        let coordination = match chirality {
+            Chirality::TB(_) => 5,
+            Chirality::OH(_) => 6,
+            _ => ligands.len(),
+        };
+        // SMILES missing coordination sites occupy the implicit-H position (RDKit convention).
+        while ligands.len() < coordination {
+            ligands.insert(usize::from(has_previous), Ligand::Vacancy);
+        }
+        if ligands.len() == 3 && matches!(atom.element.atomic_number, 7 | 15 | 16 | 33 | 34) {
+            ligands.insert(usize::from(has_previous), Ligand::LonePair);
+        }
+        let configuration = match (chirality, ligands.len()) {
+            (Chirality::Default(n) | Chirality::TH(n), 4) => Configuration::Tetrahedral(n),
+            (Chirality::Default(n) | Chirality::TB(n), 5) => Configuration::TrigonalBipyramidal(n),
+            (Chirality::Default(n) | Chirality::OH(n), 6) => Configuration::Octahedral(n),
+            _ => return Err(ErrMode::Cut(ContextError::new())),
+        };
+        molecule.stereo.push(AtomStereo {
+            center: node,
+            ligands,
+            configuration,
+        });
+    }
+    resolve_directions(&mut molecule, directions)?;
     Ok(molecule)
+}
+
+fn resolve_directions(
+    molecule: &mut Molecule,
+    directions: &[(NodeIndex, NodeIndex, bool)],
+) -> ModalResult<()> {
+    use crate::model::stereo::DoubleBondStereo;
+    use petgraph::visit::EdgeRef;
+    if directions.is_empty() {
+        return Ok(());
+    }
+    let error = || ErrMode::Cut(ContextError::new());
+    let mut used = vec![false; directions.len()];
+    for &(a, b, _) in directions {
+        if molecule
+            .get_bond_by_atoms(a, b)
+            .is_none_or(|bond| !matches!(bond.order, BondOrder::Single | BondOrder::Aromatic))
+        {
+            return Err(error());
+        }
+    }
+    for edge in molecule.graph.edge_references() {
+        if edge.weight().order != BondOrder::Double {
+            continue;
+        }
+        let ends = [edge.source(), edge.target()];
+        let mut sides = [Vec::new(), Vec::new()];
+        for (side, &end) in ends.iter().enumerate() {
+            for (i, &(a, b, up)) in directions.iter().enumerate() {
+                if a == end {
+                    sides[side].push((b, up, i));
+                } else if b == end {
+                    sides[side].push((a, !up, i));
+                }
+            }
+        }
+        if let (Some(a), Some(b)) = (sides[0].first(), sides[1].first()) {
+            for side in &sides {
+                if side.len() > 2 || (side.len() == 2 && side[0].1 == side[1].1) {
+                    return Err(error());
+                }
+            }
+            molecule.bond_stereo.push(DoubleBondStereo {
+                bond: edge.id(),
+                ends,
+                references: [a.0, b.0],
+                same_side: a.1 == b.1,
+            });
+            for &(_, _, i) in sides.iter().flatten() {
+                used[i] = true;
+            }
+        }
+    }
+    if used.contains(&false) {
+        return Err(error());
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -585,7 +786,14 @@ mod tests {
     #[test]
     fn parse_molecule_rejects_unparsed_rest() {
         // still unsupported, so an error instead of a partial molecule
-        for smiles in ["C%1CC%1", "CC$C", "C[C@H](O)N", "Cq", "C[Xx]", "C[c"] {
+        for smiles in [
+            "C%1CC%1",
+            "CC$C",
+            "NC(Br)=[C@AL1]=C(O)C",
+            "Cq",
+            "C[Xx]",
+            "C[c",
+        ] {
             assert!(parse_molecule(smiles).is_err(), "{smiles}");
         }
         // a title after whitespace is fine, and comes back as the rest
