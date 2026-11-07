@@ -1,25 +1,94 @@
 extern crate ringo;
 
 use ringo::db::search::{similarity_search, SearchMode};
+use std::process::ExitCode;
 
-// usage: ringo_search <smiles_file> <query> <min_similarity> <limit> [max_similarity] [best|first]
-fn main() {
-    let args: Vec<String> = std::env::args().collect();
-    let max_similarity = args.get(5).map_or(1.0, |s| s.parse().unwrap());
-    let mode = match args.get(6).map(String::as_str) {
-        None | Some("best") => SearchMode::Best,
-        Some("first") => SearchMode::First,
-        Some(other) => panic!("unknown mode {other:?}, expected best or first"),
+const USAGE: &str = "usage: ringo-search <smiles_file> <query> <min_similarity> <limit> \
+                     [max_similarity=1.0] [best|first]";
+
+fn main() -> ExitCode {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let Some(args) = parse_args(&args) else {
+        eprintln!("{USAGE}");
+        return ExitCode::from(2);
     };
     let results = similarity_search(
-        &args[1],
-        &args[2],
-        args[3].parse().unwrap(),
-        max_similarity,
-        args[4].parse().unwrap(),
-        mode,
+        args.smiles_file,
+        args.query,
+        args.min_similarity,
+        args.max_similarity,
+        args.limit,
+        args.mode,
     );
     for result in results {
-        println!("{:?} {:?}", result.line, result.similarity);
+        println!("{:.3}\t{}", result.similarity, result.line.trim_end());
+    }
+    ExitCode::SUCCESS
+}
+
+#[derive(Debug, PartialEq)]
+struct Args<'a> {
+    smiles_file: &'a str,
+    query: &'a str,
+    min_similarity: f32,
+    limit: usize,
+    max_similarity: f32,
+    mode: SearchMode,
+}
+
+fn parse_args(args: &[String]) -> Option<Args<'_>> {
+    if !(4..=6).contains(&args.len()) {
+        return None;
+    }
+    Some(Args {
+        smiles_file: &args[0],
+        query: &args[1],
+        min_similarity: args[2].parse().ok()?,
+        limit: args[3].parse().ok()?,
+        max_similarity: args.get(4).map_or(Some(1.0), |s| s.parse().ok())?,
+        mode: match args.get(5).map(String::as_str) {
+            None | Some("best") => SearchMode::Best,
+            Some("first") => SearchMode::First,
+            Some(_) => return None,
+        },
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{parse_args, Args};
+    use ringo::db::search::SearchMode;
+
+    fn args(list: &[&str]) -> Vec<String> {
+        list.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn test_parse_args() {
+        assert_eq!(
+            parse_args(&args(&["m.smi", "CCO", "0.5", "10"])),
+            Some(Args {
+                smiles_file: "m.smi",
+                query: "CCO",
+                min_similarity: 0.5,
+                limit: 10,
+                max_similarity: 1.0,
+                mode: SearchMode::Best,
+            })
+        );
+        let full = args(&["m.smi", "CCO", "0.5", "10", "0.9", "first"]);
+        let parsed = parse_args(&full).unwrap();
+        assert_eq!(
+            (parsed.max_similarity, parsed.mode),
+            (0.9, SearchMode::First)
+        );
+
+        // the panics from issue #20: too few arguments, a bad number, a bad mode
+        assert_eq!(parse_args(&args(&["m.smi"])), None);
+        assert_eq!(parse_args(&args(&["m.smi", "CCO", "high", "10"])), None);
+        assert_eq!(
+            parse_args(&args(&["m.smi", "CCO", "0.5", "10", "1.0", "worst"])),
+            None
+        );
     }
 }
