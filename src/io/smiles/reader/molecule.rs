@@ -5,16 +5,23 @@ use crate::model::bond::{Bond, BondOrder};
 use crate::model::molecule::Molecule;
 use petgraph::stable_graph::NodeIndex;
 use std::collections::HashMap;
-use winnow::ascii::digit1;
-use winnow::combinator::{alt, repeat};
+use winnow::combinator::{alt, preceded, repeat};
 use winnow::error::{ContextError, ErrMode};
 use winnow::prelude::*;
+use winnow::stream::AsChar;
+use winnow::token::take_while;
 
 // the atom carries whether it was written in brackets
 type Token = (Option<(Atom, bool)>, Option<Bond>, Option<u8>, Option<bool>);
 
+/// A ring-closure number: one digit, or `%` and exactly two digits, so `12` is rings 1 and 2.
 fn parse_cycle_digit(input: &mut &str) -> ModalResult<u8> {
-    digit1.try_map(str::parse::<u8>).parse_next(input)
+    alt((
+        preceded('%', take_while(2, AsChar::is_dec_digit)),
+        take_while(1, AsChar::is_dec_digit),
+    ))
+    .try_map(str::parse::<u8>)
+    .parse_next(input)
 }
 
 /// Hydrogens an atom outside brackets gets: the lowest normal valence that
@@ -52,9 +59,15 @@ fn implicit_hydrogens(molecule: &Molecule, node: NodeIndex, atomic_number: u8) -
         .map_or(0, |valence| valence - bonds)
 }
 
-/// Parses a molecule from the start of `input`; returns the unparsed rest and the molecule.
+/// Parses a molecule from the start of `input`; returns the rest (empty, or whitespace and
+/// a title) and the molecule. Anything else left over is SMILES the reader does not
+/// support, and an error, so it never yields a partial molecule.
 pub fn parse_molecule(input: &str) -> ModalResult<(&str, Molecule)> {
-    parse_molecule_next.parse_peek(input)
+    let (rest, molecule) = parse_molecule_next.parse_peek(input)?;
+    if !rest.is_empty() && !rest.starts_with(char::is_whitespace) {
+        return Err(ErrMode::Cut(ContextError::new()));
+    }
+    Ok((rest, molecule))
 }
 
 fn parse_molecule_next(input: &mut &str) -> ModalResult<Molecule> {
@@ -98,6 +111,13 @@ fn parse_molecule_next(input: &mut &str) -> ModalResult<Molecule> {
                 return Err(ErrMode::Cut(ContextError::new()));
             }
             if let Some(open_node) = open_cycles.remove(&digit) {
+                // "C11" would bond an atom to itself, "C1C1" bond two atoms twice
+                let bonded = |(a, b, _): &(NodeIndex, NodeIndex, Bond)| {
+                    (*a, *b) == (prev_node, open_node) || (*a, *b) == (open_node, prev_node)
+                };
+                if open_node == prev_node || pending_bonds.iter().any(bonded) {
+                    return Err(ErrMode::Cut(ContextError::new()));
+                }
                 pending_bonds.push((prev_node, open_node, Bond { order: prev_bond }));
                 prev_bond = BondOrder::Single;
             } else {
@@ -494,6 +514,38 @@ mod tests {
         // used to panic in add_edge on the placeholder node
         assert!(parse_molecule("1C1").is_err());
         assert!(parse_molecule("(C)1C1").is_err());
+    }
+
+    #[test]
+    fn parse_molecule_rejects_unparsed_rest() {
+        // examples from issue #10: these used to give a partial molecule
+        for smiles in ["c1ccccc1", "Brc1ccccc1", "C%1CC%1", "CC$C", "C[C@H](O)N"] {
+            assert!(parse_molecule(smiles).is_err(), "{smiles}");
+        }
+        // a title after whitespace is fine, and comes back as the rest
+        let (rest, m) = parse_molecule("CCO ethanol").unwrap();
+        assert_eq!((rest, m.count_atoms()), (" ethanol", 3));
+        let (rest, m) = parse_molecule("CCO\tethanol").unwrap();
+        assert_eq!((rest, m.count_atoms()), ("\tethanol", 3));
+    }
+
+    #[test]
+    fn parse_molecule_ring_closures() {
+        let counts = |smiles: &str| {
+            let m = parse_molecule(smiles).unwrap().1;
+            (m.count_atoms(), m.count_bonds())
+        };
+        // each digit is its own ring: bicyclo[2.2.0]hexane opens rings 1 and 2 on one atom
+        assert_eq!(counts("C12CCC1CC2"), (6, 7));
+        // two-digit ring numbers after %
+        assert_eq!(counts("C%10CC%10"), (3, 3));
+        assert_eq!(counts("C%12CCC%12"), (4, 4));
+        // a ring number can be reused after it closes
+        assert_eq!(counts("C1CC1C1CC1"), (6, 7));
+        // % with one digit, an atom bonded to itself, and a second bond between two atoms
+        for smiles in ["C%1CC1", "C11", "C1C1", "C12CC12"] {
+            assert!(parse_molecule(smiles).is_err(), "{smiles}");
+        }
     }
 
     #[test]
