@@ -121,7 +121,7 @@ mod test {
         let results = similarity_search(
             smiles_file,
             "CC(C)CC1=CC=C(C=C1)C(C)C(=O)O",
-            0.5,
+            0.3,
             1.0,
             100,
             Best,
