@@ -1,3 +1,5 @@
+pub mod common;
+
 use ringo::io::smiles::reader::molecule::parse_molecule;
 
 #[test]
@@ -65,24 +67,5 @@ fn malformed_atom_classes_are_rejected() {
 
 #[test]
 fn mapped_corpus_records_are_indexed_and_searchable() {
-    let records = include_str!("data/atom_maps.smi");
-    let path = std::env::temp_dir().join(format!("ringo-atom-maps-{}.smi", std::process::id()));
-    std::fs::write(&path, records).unwrap();
-    let name = path.to_str().unwrap();
-    assert_eq!(ringo::db::index::index_file(name, 2, 2048).unwrap(), 0);
-    for record in records.lines() {
-        let results = ringo::db::search::similarity_search(
-            name,
-            record,
-            1.0,
-            1.0,
-            10,
-            ringo::db::search::SearchMode::Best,
-        )
-        .unwrap();
-        assert_eq!(results.len(), 1);
-        assert_eq!(results[0].similarity, 1.0);
-    }
-    std::fs::remove_file(name.to_owned() + ".fp").unwrap();
-    std::fs::remove_file(path).unwrap();
+    common::assert_self_search("atom_maps", include_str!("data/atom_maps.smi"));
 }
