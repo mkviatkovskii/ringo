@@ -123,7 +123,7 @@ pub fn parse_molecule(input: &str) -> ModalResult<(&str, Molecule)> {
 fn parse_molecule_next(input: &mut &str) -> ModalResult<Molecule> {
     let mut molecule = Molecule::new();
     let mut open_cycles: HashMap<u8, (NodeIndex, Option<BondOrder>)> = HashMap::new();
-    let mut stack: Vec<(NodeIndex, Option<BondOrder>)> = Vec::new();
+    let mut stack: Vec<NodeIndex> = Vec::new();
     let mut pending_bonds: Vec<PendingBond> = Vec::new();
     let mut organic_nodes: Vec<(NodeIndex, u8, bool)> = Vec::new();
 
@@ -146,14 +146,18 @@ fn parse_molecule_next(input: &mut &str) -> ModalResult<Molecule> {
     let mut prev_bond = None;
 
     for token in tokens {
+        // a bond symbol must be followed by an atom or a ring digit: "CC=", "C(C=)C" and
+        // "C=.C" would otherwise drop it and give a different molecule
+        if prev_bond.is_some() && !matches!(token, Token::Atom(..) | Token::Ring(_)) {
+            return Err(ErrMode::Cut(ContextError::new()));
+        }
         match token {
-            Token::Open => stack.push((prev_node, prev_bond)),
+            Token::Open => stack.push(prev_node),
             Token::Close => {
-                let Some((node, bond)) = stack.pop() else {
+                let Some(node) = stack.pop() else {
                     return Err(ErrMode::Cut(ContextError::new()));
                 };
                 prev_node = node;
-                prev_bond = bond;
             }
             Token::Ring(digit) => {
                 // a ring bond needs an atom to start from or end at
@@ -168,7 +172,11 @@ fn parse_molecule_next(input: &mut &str) -> ModalResult<Molecule> {
                     if open_node == prev_node || pending_bonds.iter().any(bonded) {
                         return Err(ErrMode::Cut(ContextError::new()));
                     }
-                    // the bond symbol may stand at either end: "C=1CCCCC1" or "C1CCCCC=1"
+                    // the bond symbol may stand at either end: "C=1CCCCC1" or "C1CCCCC=1",
+                    // but not two different ones: "C=1CCCCC-1"
+                    if open_bond.is_some() && prev_bond.is_some() && open_bond != prev_bond {
+                        return Err(ErrMode::Cut(ContextError::new()));
+                    }
                     pending_bonds.push((prev_node, open_node, prev_bond.or(open_bond)));
                 } else {
                     open_cycles.insert(digit, (prev_node, prev_bond));
@@ -188,6 +196,10 @@ fn parse_molecule_next(input: &mut &str) -> ModalResult<Molecule> {
                 prev_node = node;
                 prev_bond = None;
             }
+            // "=C" and "C.=C" have no atom before the bond
+            Token::Bond(_) if prev_node == NodeIndex::end() => {
+                return Err(ErrMode::Cut(ContextError::new()));
+            }
             Token::Bond(order) => prev_bond = Some(order),
             // the next atom starts a new, unbonded component
             Token::Dot => {
@@ -197,7 +209,7 @@ fn parse_molecule_next(input: &mut &str) -> ModalResult<Molecule> {
         }
     }
 
-    if !open_cycles.is_empty() || !stack.is_empty() {
+    if !open_cycles.is_empty() || !stack.is_empty() || prev_bond.is_some() {
         return Err(ErrMode::Cut(ContextError::new()));
     }
 
@@ -654,6 +666,35 @@ mod tests {
         assert_eq!(m.get_atom(NodeIndex::new(0)).unwrap().implicit_hs, 0);
         assert!(parse_molecule("CC.").is_ok());
         assert!(parse_molecule(".1C1").is_err());
+    }
+
+    #[test]
+    fn parse_rejects_misplaced_bond_symbols() {
+        // "CC=" used to parse as ethane: a bond symbol with no atom after it was dropped
+        for smiles in [
+            "CC=",
+            "C(C=)C",
+            "C=.C",
+            "C=(O)C",
+            "=C",
+            "C.=C",
+            "C==C",
+            "C=1CCCCC-1",
+        ] {
+            assert!(parse_molecule(smiles).is_err(), "{smiles}");
+        }
+        // bonds where they belong still parse, the same symbol at both ring ends too
+        for smiles in [
+            "C=C",
+            "C(=O)O",
+            "C=1CCCCC1",
+            "C1CCCCC=1",
+            "C=1CCCCC=1",
+            "C1.C=1",
+            "C=C.O",
+        ] {
+            assert!(parse_molecule(smiles).is_ok(), "{smiles}");
+        }
     }
 
     #[test]
