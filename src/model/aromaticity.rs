@@ -143,7 +143,7 @@ impl Molecule {
         match (atom.element.atomic_number, atom.charge) {
             // a lone pair: pyrrole's N, furan's O, thiophene's S
             (7 | 15, 0) if neighbours == 3 => Some(2),
-            (8 | 16 | 34 | 52, 0) if neighbours == 2 => Some(2),
+            (7, -1) | (8 | 16 | 34 | 52, 0) if neighbours == 2 => Some(2),
             // the cyclopentadienyl anion, and an empty p orbital: tropylium, boron
             (6, -1) => Some(2),
             (6, 1) | (5, 0) => Some(0),
@@ -232,6 +232,8 @@ mod tests {
             "C1=CC=CC=C1",
             "C1=CC=NC=C1",
             "C1=CC=CN1",
+            "[N-]1C=CC=C1",
+            "[N-]1N=NN=C1",
             "C1=COC=C1",
             "C1=CSC=C1",
             "C1=CN=CN1",
@@ -316,6 +318,8 @@ mod tests {
             ("C1=CC=C2C=CC=CC2=C1", "c1ccc2ccccc2c1"),
             ("C1=CC=NC=C1", "c1ccncc1"),
             ("C1=CC=CN1", "c1cc[nH]c1"),
+            ("[N-]1C=CC=C1", "[n-]1cccc1"),
+            ("[N-]1N=NN=C1", "[n-]1nnnc1"),
             ("C1=CSC=C1", "c1ccsc1"),
             ("C1=CC=C2C(=C1)C=CN2", "c1ccc2[nH]ccc2c1"),
             ("C1=CC=C(C=C1)C1=CC=CC=C1", "c1ccccc1c1ccccc1"),
