@@ -44,7 +44,7 @@ fn implicit_hydrogens(
     atomic_number: u8,
     aromatic: bool,
 ) -> u8 {
-    let mut valences: &[u8] = match atomic_number {
+    let mut valences: &[usize] = match atomic_number {
         5 => &[3],
         6 => &[4],
         7 | 15 => &[3, 5],
@@ -53,7 +53,8 @@ fn implicit_hydrogens(
         1 | 9 | 17 | 35 | 53 => &[1],
         _ => &[],
     };
-    let mut bonds: u8 = 0;
+    // usize, so even an atom with hundreds of bonds cannot overflow
+    let mut bonds: usize = 0;
     let mut aromatic = aromatic;
     for edge in molecule.graph.edges(node) {
         bonds += match edge.weight().order {
@@ -75,7 +76,7 @@ fn implicit_hydrogens(
     valences
         .iter()
         .find(|&&valence| valence >= bonds)
-        .map_or(0, |valence| valence - bonds)
+        .map_or(0, |valence| u8::try_from(valence - bonds).unwrap_or(0))
 }
 
 /// Adds the bonds, giving each one with no symbol its order: aromatic between two
@@ -145,8 +146,14 @@ fn parse_molecule_next(input: &mut &str) -> ModalResult<Molecule> {
     let mut prev_node = NodeIndex::end();
     let mut prev_bond = None;
     let mut after_dot = false;
+    let mut after_open = false;
 
     for token in tokens {
+        // a branch must hold something: "C()C" is not a molecule
+        if after_open && !matches!(token, Token::Atom(..) | Token::Bond(_) | Token::Dot) {
+            return Err(ErrMode::Cut(ContextError::new()));
+        }
+        after_open = matches!(token, Token::Open);
         // a '.' must stand between two atoms: "CC.", ".CC" and "C..O" are truncated or
         // broken records, not molecules
         if after_dot && !matches!(token, Token::Atom(..)) {
@@ -158,6 +165,10 @@ fn parse_molecule_next(input: &mut &str) -> ModalResult<Molecule> {
             return Err(ErrMode::Cut(ContextError::new()));
         }
         match token {
+            // "=C", "C.=C", ".C" and "(C)C" have no atom before the bond, dot or branch
+            Token::Bond(_) | Token::Dot | Token::Open if prev_node == NodeIndex::end() => {
+                return Err(ErrMode::Cut(ContextError::new()));
+            }
             Token::Open => stack.push(prev_node),
             Token::Close => {
                 let Some(node) = stack.pop() else {
@@ -202,10 +213,6 @@ fn parse_molecule_next(input: &mut &str) -> ModalResult<Molecule> {
                 prev_node = node;
                 prev_bond = None;
                 after_dot = false;
-            }
-            // "=C", "C.=C" and ".C" have no atom before the bond or dot
-            Token::Bond(_) | Token::Dot if prev_node == NodeIndex::end() => {
-                return Err(ErrMode::Cut(ContextError::new()));
             }
             Token::Bond(order) => prev_bond = Some(order),
             // the next atom starts a new, unbonded component
@@ -678,6 +685,27 @@ mod tests {
             assert!(parse_molecule(smiles).is_err(), "{smiles}");
         }
         assert!(parse_molecule("C(.C)C").is_ok());
+    }
+
+    #[test]
+    fn parse_rejects_bad_branches() {
+        // "(C)C" used to give two unbonded carbons, "C()C" ethane
+        for smiles in ["(C)C", "C()C", "C(1)C", "C(C)()C"] {
+            assert!(parse_molecule(smiles).is_err(), "{smiles}");
+        }
+        for smiles in ["C(C)C", "C(=O)O", "C(C)(C)C", "C(.C)C"] {
+            assert!(parse_molecule(smiles).is_ok(), "{smiles}");
+        }
+    }
+
+    #[test]
+    fn parse_atom_with_hundreds_of_bonds() {
+        // the bond count used to overflow a u8 and panic
+        let smiles = format!("C{}", "(C)".repeat(300));
+        let m = parse_molecule(&smiles).unwrap().1;
+        assert_eq!(m.get_atom(NodeIndex::new(0)).unwrap().implicit_hs, 0);
+        // indexing computes this for every record
+        assert!(m.ecfp(2, 512).0.count_ones(..) > 0);
     }
 
     #[test]

@@ -7,7 +7,9 @@ use std::borrow::Borrow;
 use std::collections::BTreeSet;
 
 pub struct Molecule {
-    pub graph: StableGraph<Atom, Bond, Undirected>,
+    // crate-only: the reader computes implicit hydrogens once, so outside edits would leave
+    // them stale
+    pub(crate) graph: StableGraph<Atom, Bond, Undirected>,
 }
 
 impl Default for Molecule {
@@ -23,12 +25,17 @@ impl Molecule {
         }
     }
 
-    pub fn add_atom(&mut self, atom: Atom) -> NodeIndex {
+    pub(crate) fn add_atom(&mut self, atom: Atom) -> NodeIndex {
         self.graph.add_node(atom)
     }
 
-    pub fn add_bond(&mut self, atom1: NodeIndex, atom2: NodeIndex, bond: Bond) -> EdgeIndex {
+    pub(crate) fn add_bond(&mut self, atom1: NodeIndex, atom2: NodeIndex, bond: Bond) -> EdgeIndex {
         self.graph.add_edge(atom1, atom2, bond)
+    }
+
+    /// The atoms and bonds, read-only.
+    pub fn graph(&self) -> &StableGraph<Atom, Bond, Undirected> {
+        &self.graph
     }
 
     pub fn get_atom(&self, node: NodeIndex) -> Option<&Atom> {

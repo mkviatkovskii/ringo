@@ -90,6 +90,10 @@ pub fn similarity_search(
 
         // decode index item
         let index_item = IndexItem::from_bytes(&buf).map_err(with_path(&fp_path))?;
+        // a line the indexer could not parse; its similarity 0 would pass a range from 0
+        if index_item.fingerprint.0.is_clear() {
+            continue;
+        }
 
         // calculate similarity
         let similarity = tanimoto_bitset(&index_item.fingerprint.0, &query_fp.0);
@@ -200,6 +204,22 @@ mod test {
         let results = similarity_search(smiles_file, "CCC", 0.0, 1.0, 2, First).unwrap();
         let lines: Vec<&str> = results.iter().map(|r| r.line.trim_end()).collect();
         assert_eq!(lines, ["CCO", "CCN"]);
+    }
+
+    #[test]
+    fn test_search_skips_unparsed_records() {
+        let dir = TestDir::new("test_search_skips_unparsed");
+        let smiles_file = dir.path().join("m.smi");
+        // the chiral line gets an empty fingerprint; it used to fill the one result
+        std::fs::write(&smiles_file, "N[C@H](C)C(=O)O\nCCC\n").unwrap();
+        let smiles_file = smiles_file.to_str().unwrap();
+        index_file(smiles_file, 2, 512).unwrap();
+
+        for mode in [First, Best] {
+            let results = similarity_search(smiles_file, "CCO", 0.0, 1.0, 10, mode).unwrap();
+            let lines: Vec<&str> = results.iter().map(|r| r.line.trim_end()).collect();
+            assert_eq!(lines, ["CCC"], "{mode:?}");
+        }
     }
 
     #[test]

@@ -160,4 +160,22 @@ pub(crate) mod test {
         let e = index_file(smiles_file.to_str().unwrap(), 2, 100).unwrap_err();
         assert_eq!(e.kind(), std::io::ErrorKind::InvalidInput);
     }
+
+    #[test]
+    fn test_failed_rebuild_keeps_old_index() {
+        let dir = TestDir::new("test_failed_rebuild");
+        let smiles_file = dir.path().join("m.smi");
+        std::fs::write(&smiles_file, "CCO\nCCC\n").unwrap();
+        let smiles_file = smiles_file.to_str().unwrap();
+        index_file(smiles_file, 2, 512).unwrap();
+        let fp_file = dir.path().join("m.smi.fp");
+        let old = std::fs::read(&fp_file).unwrap();
+
+        // the second line is not UTF-8, so the rebuild fails after it has started writing
+        std::fs::write(smiles_file, b"CCO\n\xff\xfe\n").unwrap();
+        let e = index_file(smiles_file, 2, 512).unwrap_err();
+        assert_eq!(e.kind(), std::io::ErrorKind::InvalidData);
+        assert!(dir.path().join("m.smi.fp.tmp").exists());
+        assert_eq!(std::fs::read(&fp_file).unwrap(), old);
+    }
 }
