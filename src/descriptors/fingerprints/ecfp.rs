@@ -88,9 +88,15 @@ impl Molecule {
     }
 }
 
-// modulo in u64: `id as usize` would drop the high half on 32-bit targets
+/// The splitmix64 finalizer mixes the high bits of `id` into the low ones the modulo
+/// keeps; FNV-1a alone only carries changes upward. Modulo in u64, because
+/// `id as usize` would drop the high half on 32-bit targets.
 fn bit(id: u64, bits: usize) -> usize {
-    (id % bits as u64) as usize
+    let mut z = id;
+    z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+    z ^= z >> 31;
+    (z % bits as u64) as usize
 }
 
 // explicit codes, so reordering BondOrder cannot change stored fingerprints
@@ -134,7 +140,7 @@ mod test {
         let ibuprofen = ecfp("CC(C)CC1=CC=C(C=C1)C(C)C(=O)O", 2, 512);
         let naproxen = ecfp("CC(C1=CC2=C(C=C1)C=C(C=C2)OC)C(=O)O", 2, 512);
         let sim = tanimoto_bitset(&ibuprofen.0, &naproxen.0);
-        assert!(0.35 < sim && sim < 0.37);
+        assert!(0.40 < sim && sim < 0.42);
     }
 
     #[test]
@@ -174,7 +180,7 @@ mod test {
         assert_eq!(fnv1a([]), 0xcbf2_9ce4_8422_2325);
         assert_eq!(
             ones(&ecfp("CC(=O)O", 2, 512)),
-            [38, 76, 185, 194, 370, 384, 417]
+            [120, 169, 186, 248, 353, 390, 486]
         );
     }
 }
