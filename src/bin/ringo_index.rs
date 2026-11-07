@@ -12,16 +12,23 @@ fn main() -> ExitCode {
         eprintln!("{USAGE}");
         return ExitCode::from(2);
     };
-    // index_file panics on invalid parameters, so check them here first
+    // bad parameters are a usage error (exit 2), not a failed run
     if let Err(e) = IndexHeader::new(radius, bits) {
         eprintln!("{e}\n{USAGE}");
         return ExitCode::from(2);
     }
-    let skipped = index_file(smiles_file, radius, bits);
-    if skipped > 0 {
-        eprintln!("skipped {skipped} line(s) that could not be parsed");
+    match index_file(smiles_file, radius, bits) {
+        Ok(skipped) => {
+            if skipped > 0 {
+                eprintln!("skipped {skipped} line(s) that could not be parsed");
+            }
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("ringo-index: {e}");
+            ExitCode::FAILURE
+        }
     }
-    ExitCode::SUCCESS
 }
 
 fn parse_args(args: &[String]) -> Option<(&str, usize, usize)> {

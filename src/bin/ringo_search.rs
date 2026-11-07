@@ -12,14 +12,20 @@ fn main() -> ExitCode {
         eprintln!("{USAGE}");
         return ExitCode::from(2);
     };
-    let results = similarity_search(
+    let results = match similarity_search(
         args.smiles_file,
         args.query,
         args.min_similarity,
         args.max_similarity,
         args.limit,
         args.mode,
-    );
+    ) {
+        Ok(results) => results,
+        Err(e) => {
+            eprintln!("ringo-search: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
     for result in results {
         println!("{:.3}\t{}", result.similarity, result.line.trim_end());
     }
