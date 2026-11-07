@@ -41,16 +41,28 @@ separate codes for donor and acceptor ends. Equivalent reversed spellings, such 
 | Configuration | Supported notation |
 |---|---|
 | Tetrahedral | `@`, `@@`, `@TH1`, `@TH2` |
+| Square planar | `@SP1`–`@SP3`; degree-four shorthand remains tetrahedral |
 | Trigonal bipyramidal | `@TB1`–`@TB20`, supported coordination-based shorthand |
 | Octahedral | `@OH1`–`@OH30`, supported coordination-based shorthand |
 | Ordinary double bond | `/`, `\` |
 
 `Molecule::atom_stereo()` and `Molecule::double_bond_stereo()` expose the
 preserved configurations. Atom configurations refer to recorded SMILES ligand order,
-not CIP R/S labels. TB/OH permutation numbers retain their SMILES meaning; missing
+not CIP R/S labels. SP/TB/OH permutation numbers retain their SMILES meaning; missing
 coordination sites occupy the implicit-hydrogen position, following the RDKit SMILES
 convention. Supported three-neighbour N/P/S/As/Se tetrahedral configurations use a
 virtual lone-pair site in that position, following the Open Babel convention.
+
+Square-planar tags preserve the four SMILES-ordered ligand sites and the
+[OpenSMILES U, 4 and Z permutations](https://opensmiles.org/opensmiles.html#_square_planar_centers).
+Using zero-based ligand indices, the opposite pairs are `(0, 2)` and `(1, 3)` for
+`SP1`, `(0, 1)` and `(2, 3)` for `SP2`, and `(0, 3)` and `(1, 2)` for `SP3`.
+Repeated ligands and dative bonds are supported: `Cl[Pt@SP1](Cl)(<-[NH3])<-[NH3]`
+describes cisplatin, while `Cl[Pt@SP2](Cl)(<-[NH3])<-[NH3]` describes transplatin.
+Bracket hydrogens and missing SP sites use the same insertion position as TB/OH;
+missing sites are `Ligand::Vacancy`, not lone pairs. More than four SP sites is an
+error. See the [RDKit conventions](https://www.rdkit.org/docs/RDKit_Book.html#support-for-non-tetrahedral-atomic-stereochemistry)
+for hydrogen and missing-site examples.
 
 Absence of a stereo record means unspecified stereochemistry. Invalid, incomplete,
 unsupported or contradictory specifications produce parsing errors. Directional
@@ -63,7 +75,7 @@ the molecule model does not yet make opposite configurations score differently.
 
 ## Known gaps
 
-- Square-planar and allene/cumulene stereo.
+- Allene/cumulene stereo.
 - Enhanced stereo and CXSMILES interpretation. Whitespace-separated extension
   blocks are currently treated as trailing record text, not chemical metadata.
 - Tilde (`~`) bonds and extended ring labels such as `%(100)`.

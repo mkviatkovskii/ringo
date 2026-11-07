@@ -7,13 +7,15 @@ pub enum Ligand {
     Atom(NodeIndex),
     Hydrogen,
     LonePair,
-    /// An unoccupied site in explicitly tagged TB/OH coordination.
+    /// An unoccupied site in explicitly tagged SP/TB/OH coordination.
     Vacancy,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Configuration {
     Tetrahedral(u8),
+    /// SMILES SP1, SP2, SP3: opposite ligand indices are (0, 2), (0, 1), (0, 3).
+    SquarePlanar(u8),
     TrigonalBipyramidal(u8),
     Octahedral(u8),
 }
