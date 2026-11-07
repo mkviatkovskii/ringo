@@ -67,5 +67,6 @@ fn malformed_atom_classes_are_rejected() {
 
 #[test]
 fn mapped_corpus_records_are_indexed_and_searchable() {
-    common::assert_self_search("atom_maps", include_str!("data/atom_maps.smi"));
+    let records = include_str!("data/atom_maps.smi");
+    common::assert_search("atom_maps", records, records.lines());
 }

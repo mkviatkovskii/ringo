@@ -3,6 +3,8 @@ use crate::model::fingerprint::Fingerprint;
 use crate::model::molecule::Molecule;
 use fixedbitset::FixedBitSet;
 use petgraph::algo::bridges;
+use petgraph::stable_graph::NodeIndex;
+use petgraph::visit::EdgeFiltered;
 use petgraph::visit::{EdgeIndexable, EdgeRef, NodeIndexable};
 use std::collections::HashSet;
 
@@ -15,10 +17,17 @@ impl Molecule {
         let nodes: Vec<_> = graph.node_indices().collect();
         let mut fp = FixedBitSet::with_capacity(bits);
 
-        // a bond is in a ring unless it is a bridge
+        // Covalent ring membership excludes coordination bonds; all bonds still enter ECFP.
         let mut ring_bonds = FixedBitSet::with_capacity(graph.edge_bound());
-        ring_bonds.insert_range(..);
-        for edge in bridges(graph) {
+        let covalent =
+            EdgeFiltered::from_fn(graph, |edge| edge.weight().order != BondOrder::Dative);
+        for edge in graph
+            .edge_indices()
+            .filter(|&edge| graph[edge].order != BondOrder::Dative)
+        {
+            ring_bonds.insert(edge.index());
+        }
+        for edge in bridges(&covalent) {
             ring_bonds.remove(edge.id().index());
         }
 
@@ -61,7 +70,7 @@ impl Molecule {
                             };
                             env.insert(edge.id().index());
                             env.union_with(&envs[other.index()]);
-                            (bond_code(edge.weight()), ids[other.index()])
+                            (bond_code(edge.weight(), node), ids[other.index()])
                         })
                         .collect();
                     neighbours.sort_unstable();
@@ -106,12 +115,19 @@ fn bit(id: u64, bits: usize) -> usize {
 }
 
 // explicit codes, so reordering BondOrder cannot change stored fingerprints
-fn bond_code(bond: &Bond) -> u64 {
+fn bond_code(bond: &Bond, node: NodeIndex) -> u64 {
     match bond.order {
         BondOrder::Single => 1,
         BondOrder::Double => 2,
         BondOrder::Triple => 3,
         BondOrder::Aromatic => 4,
+        BondOrder::Dative => {
+            if bond.donor == Some(node) {
+                5
+            } else {
+                6
+            }
+        }
     }
 }
 

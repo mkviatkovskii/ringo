@@ -1,7 +1,7 @@
 use crate::io::smiles::reader::atom::{parse_atom, Chirality};
-use crate::io::smiles::reader::bond::parse_bond;
+use crate::io::smiles::reader::bond::{parse_bond, ParsedBond};
 use crate::model::atom::Atom;
-use crate::model::bond::{Bond, BondOrder};
+use crate::model::bond::BondOrder;
 use crate::model::molecule::Molecule;
 use crate::model::stereo::{AtomStereo, Configuration, Ligand};
 use petgraph::stable_graph::NodeIndex;
@@ -16,7 +16,7 @@ use winnow::token::take_while;
 enum Token {
     /// The atom, whether it was written in brackets, and its chirality tag.
     Atom(Atom, bool, Option<Chirality>),
-    Bond(BondOrder, Option<bool>),
+    Bond(ParsedBond, Option<bool>),
     Ring(u8),
     Open,
     Close,
@@ -24,7 +24,7 @@ enum Token {
 }
 
 // a bond with no symbol is None until both its atoms are known
-type PendingBond = (NodeIndex, NodeIndex, Option<BondOrder>);
+type PendingBond = (NodeIndex, NodeIndex, Option<ParsedBond>);
 
 /// A ring-closure number: one digit, or `%` and exactly two digits, so `12` is rings 1 and 2.
 fn parse_cycle_digit(input: &mut &str) -> ModalResult<u8> {
@@ -57,6 +57,7 @@ fn implicit_hydrogens(
     let mut aromatic = aromatic;
     for edge in molecule.graph.edges(node) {
         let order = match edge.weight().order {
+            BondOrder::Dative => u8::from(edge.weight().donor != Some(node)),
             BondOrder::Single => 1,
             BondOrder::Double => 2,
             BondOrder::Triple => 3,
@@ -94,8 +95,10 @@ fn add_bonds(molecule: &mut Molecule, pending_bonds: Vec<PendingBond>) {
         } else {
             BondOrder::Single
         };
-        let order = order.unwrap_or(implicit);
-        molecule.add_bond(node1, node2, Bond { order });
+        let bond = order
+            .unwrap_or_else(|| ParsedBond::covalent(implicit))
+            .bind(node1, node2);
+        molecule.add_bond(node1, node2, bond);
     }
 }
 
@@ -112,7 +115,7 @@ pub fn parse_molecule(input: &str) -> ModalResult<(&str, Molecule)> {
 
 struct OpenRing {
     node: NodeIndex,
-    bond: Option<BondOrder>,
+    bond: Option<ParsedBond>,
     direction: Option<bool>,
     slot: usize,
 }
@@ -125,7 +128,7 @@ impl RingClosures {
         &mut self,
         digit: u8,
         prev_node: NodeIndex,
-        (prev_bond, prev_direction): (Option<BondOrder>, Option<bool>),
+        (prev_bond, prev_direction): (Option<ParsedBond>, Option<bool>),
         pending_bonds: &mut Vec<PendingBond>,
         ligand_order: &mut [Vec<Option<NodeIndex>>],
         directions: &mut Vec<(NodeIndex, NodeIndex, bool)>,
@@ -150,6 +153,7 @@ impl RingClosures {
             }
             // the bond symbol may stand at either end: "C=1CCCCC1" or "C1CCCCC=1",
             // but not two different ones: "C=1CCCCC-1"
+            let open_bond = open_bond.map(ParsedBond::reversed);
             if open_bond.is_some() && prev_bond.is_some() && open_bond != prev_bond {
                 return Err(ErrMode::Cut(ContextError::new()));
             }
@@ -295,9 +299,9 @@ fn parse_tokens(input: &mut &str) -> ModalResult<Vec<Token>> {
         0..,
         alt((
             parse_atom.map(|(atom, bracket, stereo)| Token::Atom(atom, bracket, stereo)),
-            parse_bond.map(|bond| Token::Bond(bond.order, None)),
-            '/'.map(|_| Token::Bond(BondOrder::Single, Some(true))),
-            '\\'.map(|_| Token::Bond(BondOrder::Single, Some(false))),
+            parse_bond.map(|bond| Token::Bond(bond, None)),
+            '/'.map(|_| Token::Bond(ParsedBond::covalent(BondOrder::Single), Some(true))),
+            '\\'.map(|_| Token::Bond(ParsedBond::covalent(BondOrder::Single), Some(false))),
             parse_cycle_digit.map(Token::Ring),
             '('.map(|_| Token::Open),
             ')'.map(|_| Token::Close),

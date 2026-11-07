@@ -1,0 +1,48 @@
+# Development
+
+Use stable Rust. The normal checks run without downloading chemical databases:
+
+```sh
+cargo +stable fmt --all --check
+cargo +stable clippy --all-targets --locked -- -D warnings
+cargo +stable test --locked
+```
+
+CI runs tests on Linux and Windows. For a faster local build, `cargo test` uses
+the debug profile; use `--release` when measuring indexing or search performance.
+
+## Corpus fixtures and coverage
+
+Small SMILES fixtures under `tests/data` retain their ChEBI/ChEMBL identifiers.
+The full downloaded databases are not committed and are not required by the normal
+test suite.
+
+The optional survey currently expects both `chebi_20261105.smi` and `chembl_37.smi`
+in the directory named by `RINGO_SMILES_CORPUS`. Set the variable to your download
+directory, then run the ignored survey test.
+
+PowerShell:
+
+```powershell
+$env:RINGO_SMILES_CORPUS = 'C:\path\to\smiles'
+cargo +stable test --release --locked --test stereo corpus_coverage -- --ignored --nocapture
+```
+
+POSIX shell:
+
+```sh
+RINGO_SMILES_CORPUS=/path/to/smiles cargo +stable test --release --locked --test stereo corpus_coverage -- --ignored --nocapture
+```
+
+The survey reports accepted/rejected counts for plain and stereo-marked records,
+plus rejection examples. It checks that file size and modification time remain
+unchanged during each scan. A passing survey is not a claim of complete parser
+coverage or chemical validity. The checksum-pinned baseline and complete rejection
+classification are recorded in [issue #8](https://github.com/mkviatkovskii/ringo/issues/8).
+
+## Index compatibility during development
+
+Index format remains version 1 for the current development release; version changes
+are made once per release. Rebuild development indexes when parser changes admit
+previously skipped records or fingerprint semantics change. Atom class/map labels
+and the addition of dative-bond support leave existing covalent fingerprints unchanged.

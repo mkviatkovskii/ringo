@@ -1,35 +1,77 @@
 # Ringo
-File chemical search engine written in Rust.
 
-Bracket atoms accept a trailing numeric class/map label, such as `[CH3:12]`,
-`[NH4+:005]`, or `[1*:0]`. `Atom::atom_class` stores the label as a `u32`;
-an absent label is zero. Labels do not affect fingerprints or stereochemistry.
-Malformed labels and values above `u32::MAX` are parsing errors.
+Ringo is a file-based chemical similarity search engine written in Rust. It builds
+an ECFP fingerprint index for a SMILES file and searches it using Tanimoto similarity.
+It provides two command-line tools and a Rust library.
 
-The SMILES reader preserves tetrahedral (`@`, `@@`, `@TH1`, `@TH2`),
-trigonal-bipyramidal (`@TB1`–`@TB20`), octahedral (`@OH1`–`@OH30`),
-and ordinary double-bond (`/`, `\`) configurations. Use
-`Molecule::atom_stereo()` and `Molecule::double_bond_stereo()` to inspect them.
-Atom configurations refer to the recorded ligand order, not CIP R/S labels.
-For TB/OH, permutation numbers retain their SMILES meaning; missing coordination
-sites occupy the implicit-hydrogen position, following RDKit's SMILES convention.
-Three-neighbour N/P/S/As/Se tetrahedral records use a virtual lone-pair site in the implicit-hydrogen position (Open Babel convention).
-Absence of a record means unspecified stereochemistry. The reader does not
-validate chemical plausibility or perceive additional stereocentres.
+## Getting started
 
-ECFP fingerprints and similarity search remain **stereo-insensitive**: opposite
-configurations can have identical fingerprints. Index format remains version 1.
-Rebuild development indexes to include stereo records that older readers skipped.
-Allene/cumulene and square-planar stereochemistry remain unsupported. Invalid,
-incomplete, unsupported, or contradictory specifications produce parsing errors.
-Directional specifications that aromaticity normalization cannot preserve are
-also rejected rather than silently discarded.
-
-`tests/data/stereo.smi` contains small examples with source ChEBI/ChEMBL IDs from
-the supplied `chebi_20261105.smi` and `chembl_37.smi` downloads. The full downloads
-are not required for the normal suite. To run the optional corpus survey, set
-`RINGO_SMILES_CORPUS` to their directory and run:
+Use the current stable Rust toolchain. From the repository root, build both tools:
 
 ```sh
-cargo test --release --locked --test stereo corpus_coverage -- --ignored --nocapture
+cargo +stable build --release --locked
 ```
+
+On x86-64, the repository targets x86-64-v3. For older CPUs, set the `RUSTFLAGS`
+environment variable to `-C target-cpu=x86-64` before building or running Cargo.
+
+The repository includes a small SMILES file containing ibuprofen and naproxen.
+Index it, then search for compounds similar to ibuprofen:
+
+```sh
+cargo +stable run --release --locked --bin ringo-index -- tests/data/molecules.smi
+cargo +stable run --release --locked --bin ringo-search -- tests/data/molecules.smi "CC(C)CC1=CC=C(C=C1)C(C)C(=O)O" 0.4 10
+```
+
+Indexing creates `tests/data/molecules.smi.fp`. Search prints a similarity score
+followed by the original input record, separated by a tab. Scores range from 0 to 1;
+1 means identical fingerprints. Reindex after editing the SMILES file.
+
+## Input format
+
+Use a UTF-8 text file with one SMILES record per line. An optional name or identifier
+may follow the SMILES, separated by whitespace:
+
+```text
+CCO ethanol
+CC(=O)O acetic_acid
+```
+
+The indexer reports how many records could not be parsed. Those records are omitted
+from search results. An unsupported or malformed query produces an error.
+
+## Command-line options
+
+```text
+ringo-index <smiles_file> [radius=2] [bits=512]
+ringo-search <smiles_file> <query> <min_similarity> <limit> [max_similarity=1.0] [best|first]
+```
+
+The index stores its fingerprint radius and bit count; queries use those same
+parameters. Radius 2 corresponds to ECFP4.
+
+Search includes scores between the minimum and maximum, inclusive. The default
+`best` mode returns the most similar records first, up to the limit. `first`
+returns the first matching records in file order and stops once it reaches the limit.
+
+## SMILES support and limits
+
+The reader handles aromatic and Kekulé notation, disconnected components, isotopes,
+atom map/class labels, dative bonds, and supported atom and double-bond stereo tags.
+See [SMILES support](docs/smiles.md) for the exact syntax, model representation and
+unsupported cases.
+
+Fingerprints and similarity search are currently **stereo-insensitive**: opposite
+configurations can have identical fingerprints. The reader preserves supported
+stereochemistry but does not validate chemical plausibility or assign CIP labels.
+Ringo does not yet read every SMILES extension.
+
+## Development
+
+See [development and corpus checks](docs/development.md) for test commands and the
+optional ChEBI/ChEMBL coverage survey. Generate the Rust API documentation with
+`cargo +stable doc --no-deps`.
+
+## License
+
+Apache-2.0.
