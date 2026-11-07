@@ -1,5 +1,7 @@
 use crate::db::index_item::IndexItem;
 use crate::io::smiles::reader::molecule::parse_molecule;
+use crate::model::fingerprint::{Fingerprint, FINGERPRINT_SIZE};
+use fixedbitset::FixedBitSet;
 use std::fs::File;
 use std::io::{BufRead, BufWriter, Write};
 
@@ -8,27 +10,40 @@ const LINE_ENDING_LENGTH: usize = 2;
 #[cfg(not(windows))]
 const LINE_ENDING_LENGTH: usize = 1;
 
-pub fn index_file(smiles_file: &str) {
+/// Writes `<smiles_file>.fp` and returns how many lines could not be parsed.
+/// Those lines get an empty fingerprint, so records stay aligned with lines.
+pub fn index_file(smiles_file: &str) -> usize {
     // open file for reading
     let fi = File::open(smiles_file).expect("Could not open file");
 
-    // open binary file for index
+    // write to a temp file and rename at the end, so a failed run keeps the old index
+    let fp_path = smiles_file.to_owned() + ".fp";
+    let tmp_path = fp_path.clone() + ".tmp";
     let mut offset = 0;
-    let fo = File::create(smiles_file.to_owned() + ".fp");
-    let mut writer = BufWriter::new(fo.unwrap());
+    let mut skipped = 0;
+    let mut writer = BufWriter::new(File::create(&tmp_path).unwrap());
 
     for line in std::io::BufReader::new(fi).lines() {
         let line = line.unwrap();
-        let molecule = parse_molecule(&line).unwrap().1;
+        let fingerprint = match parse_molecule(&line) {
+            Ok((_, molecule)) => molecule.ecfp(2, 512),
+            Err(_) => {
+                skipped += 1;
+                Fingerprint(FixedBitSet::with_capacity(FINGERPRINT_SIZE))
+            }
+        };
         let index_item = IndexItem {
             position: offset,
-            fingerprint: molecule.ecfp(2, 512),
+            fingerprint,
         };
         offset += line.len() + LINE_ENDING_LENGTH;
 
         writer.write_all(&index_item.to_bytes()).unwrap();
     }
-    writer.flush().unwrap();
+    // flush, sync and close before rename (an open file cannot be renamed on Windows)
+    writer.into_inner().unwrap().sync_all().unwrap();
+    std::fs::rename(&tmp_path, &fp_path).unwrap();
+    skipped
 }
 
 #[cfg(test)]
@@ -81,5 +96,23 @@ pub(crate) mod test {
             std::fs::metadata(fp_file).unwrap().len(),
             2 * INDEX_ITEM_SIZE as u64
         );
+    }
+
+    #[test]
+    fn test_index_skips_unparseable_lines() {
+        let dir = TestDir::new("test_index_skips_unparseable_lines");
+        let smiles_file = dir.path().join("m.smi");
+        // the chiral line is not supported yet and must not abort indexing
+        std::fs::write(&smiles_file, "CCO\nN[C@H](C)C(=O)O\nCCC\n").unwrap();
+
+        let skipped = index_file(smiles_file.to_str().unwrap());
+
+        assert_eq!(skipped, 1);
+        let fp_file = dir.path().join("m.smi.fp");
+        assert_eq!(
+            std::fs::metadata(fp_file).unwrap().len(),
+            3 * INDEX_ITEM_SIZE as u64
+        );
+        assert!(!dir.path().join("m.smi.fp.tmp").exists());
     }
 }
