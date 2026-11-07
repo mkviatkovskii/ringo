@@ -1,9 +1,12 @@
 use fixedbitset::FixedBitSet;
 
+/// Returns 0.0 when both sets are empty, so empty records never match.
 pub fn tanimoto_bitset(a: &FixedBitSet, b: &FixedBitSet) -> f32 {
-    let mut and_ = a.clone();
-    and_.intersect_with(b);
-    and_.count_ones(..) as f32 / (a.count_ones(..) + b.count_ones(..) - and_.count_ones(..)) as f32
+    let union = a.union_count(b);
+    if union == 0 {
+        return 0.0;
+    }
+    a.intersection_count(b) as f32 / union as f32
 }
 
 #[cfg(test)]
@@ -30,5 +33,13 @@ mod tests {
         b.insert(0);
         b.insert(1);
         assert_eq!(tanimoto_bitset(&a, &b), 0.5);
+    }
+
+    #[test]
+    fn test_tanimoto_bitset_empty() {
+        // used to be 0/0 = NaN
+        let a = FixedBitSet::with_capacity(8);
+        let b = FixedBitSet::with_capacity(8);
+        assert_eq!(tanimoto_bitset(&a, &b), 0.0);
     }
 }
