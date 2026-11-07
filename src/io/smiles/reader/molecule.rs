@@ -3,10 +3,8 @@ use crate::io::smiles::reader::bond::parse_bond;
 use crate::model::atom::Atom;
 use crate::model::bond::{Bond, BondOrder};
 use crate::model::molecule::Molecule;
-use petgraph::algo::bridges;
-use petgraph::stable_graph::{EdgeIndex, NodeIndex};
-use petgraph::visit::EdgeRef;
-use std::collections::{HashMap, HashSet};
+use petgraph::stable_graph::NodeIndex;
+use std::collections::HashMap;
 use winnow::combinator::{alt, preceded, repeat};
 use winnow::error::{ContextError, ErrMode};
 use winnow::prelude::*;
@@ -79,33 +77,18 @@ fn implicit_hydrogens(
 }
 
 /// Adds the bonds, giving each one with no symbol its order: aromatic between two
-/// aromatic atoms in a ring, single otherwise.
+/// aromatic atoms, single otherwise. Aromaticity perception later turns the aromatic
+/// ones outside an aromatic ring, like biphenyl's link, into single bonds.
 fn add_bonds(molecule: &mut Molecule, pending_bonds: Vec<PendingBond>) {
-    let mut implicit_aromatic: Vec<EdgeIndex> = Vec::new();
     for (node1, node2, order) in pending_bonds {
         let aromatic = |node| molecule.get_atom(node).is_some_and(|atom| atom.aromatic);
-        let both_aromatic = aromatic(node1) && aromatic(node2);
-        let bond = Bond {
-            order: order.unwrap_or(if both_aromatic {
-                BondOrder::Aromatic
-            } else {
-                BondOrder::Single
-            }),
+        let implicit = if aromatic(node1) && aromatic(node2) {
+            BondOrder::Aromatic
+        } else {
+            BondOrder::Single
         };
-        let edge = molecule.add_bond(node1, node2, bond);
-        if order.is_none() && both_aromatic {
-            implicit_aromatic.push(edge);
-        }
-    }
-    // a bond outside any ring, like the one joining the rings of biphenyl
-    // "c1ccccc1c1ccccc1", is single even between aromatic atoms
-    let ring_free: HashSet<EdgeIndex> = bridges(&molecule.graph).map(|edge| edge.id()).collect();
-    for edge in implicit_aromatic {
-        if ring_free.contains(&edge) {
-            if let Some(bond) = molecule.graph.edge_weight_mut(edge) {
-                bond.order = BondOrder::Single;
-            }
-        }
+        let order = order.unwrap_or(implicit);
+        molecule.add_bond(node1, node2, Bond { order });
     }
 }
 
@@ -228,6 +211,8 @@ fn parse_molecule_next(input: &mut &str) -> ModalResult<Molecule> {
             atom.implicit_hs = hs;
         }
     }
+    // after the hydrogens: perception moves electrons around, not hydrogens
+    molecule.perceive_aromaticity();
 
     Ok(molecule)
 }
