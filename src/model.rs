@@ -4,3 +4,4 @@ pub mod bond;
 pub mod element;
 pub mod fingerprint;
 pub mod molecule;
+pub mod stereo;

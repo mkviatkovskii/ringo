@@ -208,8 +208,8 @@ mod test {
     fn test_search_skips_unparsed_records() {
         let dir = TestDir::new("test_search_skips_unparsed");
         let smiles_file = dir.path().join("m.smi");
-        // the chiral line gets an empty fingerprint; it used to fill the one result
-        std::fs::write(&smiles_file, "N[C@H](C)C(=O)O\nCCC\n").unwrap();
+        // the unsupported allene line gets an empty fingerprint; it used to fill the one result
+        std::fs::write(&smiles_file, "NC(Br)=[C@AL1]=C(O)C\nCCC\n").unwrap();
         let smiles_file = smiles_file.to_str().unwrap();
         index_file(smiles_file, 2, 512).unwrap();
 

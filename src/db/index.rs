@@ -138,7 +138,7 @@ pub(crate) mod test {
         let overflow = format!("C{}", "(C)".repeat(300));
         std::fs::write(
             &smiles_file,
-            format!("CCO\nN[C@H](C)C(=O)O\n{overflow}\nCCC\n"),
+            format!("CCO\nNC(Br)=[C@AL1]=C(O)C\n{overflow}\nCCC\n"),
         )
         .unwrap();
 
