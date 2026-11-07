@@ -5,23 +5,23 @@ use crate::io::smiles::reader::isotope::parse_isotope;
 use crate::model::atom::Atom;
 use crate::model::element::Element;
 use nom::combinator::opt;
-use nom::IResult;
+use nom::{IResult, Parser};
 
 pub fn parse_atom(input: &str) -> IResult<&str, Atom> {
     let mut isotope: Option<u8> = None;
     let mut charge: Option<i8> = None;
     let mut hs: Option<u8> = None;
     let atomic_number: u8;
-    let (mut input, sqro_found) = opt(nom::character::complete::char('['))(input)?;
+    let (mut input, sqro_found) = opt(nom::character::complete::char('[')).parse(input)?;
     if sqro_found.is_some() {
-        (input, isotope) = opt(parse_isotope)(input).unwrap_or((input, None));
+        (input, isotope) = opt(parse_isotope).parse(input).unwrap_or((input, None));
     }
     (input, atomic_number) = parse_element(input)?;
     if sqro_found.is_some() {
-        (input, hs) = opt(parse_hydrogens)(input).unwrap_or((input, None));
-        (input, charge) = opt(parse_charge)(input).unwrap_or((input, None));
+        (input, hs) = opt(parse_hydrogens).parse(input).unwrap_or((input, None));
+        (input, charge) = opt(parse_charge).parse(input).unwrap_or((input, None));
         let sqrc_found: Option<char>;
-        (input, sqrc_found) = opt(nom::character::complete::char(']'))(input)?;
+        (input, sqrc_found) = opt(nom::character::complete::char(']')).parse(input)?;
         if (sqro_found.is_some() && sqrc_found.is_none())
             || (sqro_found.is_none() && sqrc_found.is_some())
         {

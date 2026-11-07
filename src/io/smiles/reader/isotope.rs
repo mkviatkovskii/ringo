@@ -1,9 +1,9 @@
-use nom::{character::complete::digit1, combinator::map_res, IResult};
+use nom::{character::complete::digit1, combinator::map_res, IResult, Parser};
 
 /// Parses isotope value, that should be a number
 /// Returns the isotope value
 pub fn parse_isotope(input: &str) -> IResult<&str, u8> {
-    map_res(digit1, str::parse::<u8>)(input)
+    map_res(digit1, str::parse::<u8>).parse(input)
 }
 
 #[cfg(test)]

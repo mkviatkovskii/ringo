@@ -7,12 +7,12 @@ use nom::character::complete::{char, digit1};
 use nom::combinator::{map, map_res};
 use nom::error::ErrorKind;
 use nom::multi::many0;
-use nom::IResult;
+use nom::{IResult, Parser};
 use petgraph::stable_graph::NodeIndex;
 use std::collections::HashMap;
 
 fn parse_cycle_digit(input: &str) -> IResult<&str, u8> {
-    map_res(digit1, str::parse::<u8>)(input)
+    map_res(digit1, str::parse::<u8>).parse(input)
 }
 
 pub fn parse_molecule(input: &str) -> IResult<&str, Molecule> {
@@ -29,7 +29,7 @@ pub fn parse_molecule(input: &str) -> IResult<&str, Molecule> {
         map(char(')'), |_| (None, None, None, Some(false))),
     )));
 
-    let (input, atoms_and_bonds) = parse_atoms_and_bonds(input)?;
+    let (input, atoms_and_bonds) = parse_atoms_and_bonds.parse(input)?;
 
     let mut prev_node = NodeIndex::end();
     let mut prev_bond = BondOrder::Single;

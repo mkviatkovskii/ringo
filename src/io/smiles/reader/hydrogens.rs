@@ -2,7 +2,7 @@ use nom;
 use nom::character::complete::{char, digit1};
 use nom::combinator::map_res;
 use nom::sequence::preceded;
-use nom::IResult;
+use nom::{IResult, Parser};
 
 /// Parse a hydrogen count. Possible inputs are:
 /// * H - 1 hydrogen
@@ -10,10 +10,10 @@ use nom::IResult;
 ///
 /// Returns the number of hydrogens
 pub fn parse_hydrogens(input: &str) -> IResult<&str, u8> {
-    let single_hydrogen_parser = char('H');
+    let mut single_hydrogen_parser = char('H');
     let mut hydrogen_parser = preceded(char('H'), map_res(digit1, str::parse::<u8>));
     single_hydrogen_parser(input)?;
-    let hydrogen_parser_result = hydrogen_parser(input);
+    let hydrogen_parser_result = hydrogen_parser.parse(input);
     if hydrogen_parser_result.is_ok() {
         return hydrogen_parser_result;
     }

@@ -1,7 +1,7 @@
 use nom::branch::alt;
 use nom::bytes::complete::tag;
 use nom::combinator::map_res;
-use nom::IResult;
+use nom::{IResult, Parser};
 
 pub fn parse_element(input: &str) -> IResult<&str, u8> {
     map_res(
@@ -30,7 +30,8 @@ pub fn parse_element(input: &str) -> IResult<&str, u8> {
             "H" => Ok(1),
             _ => Err(()),
         },
-    )(input)
+    )
+    .parse(input)
 }
 
 #[cfg(test)]

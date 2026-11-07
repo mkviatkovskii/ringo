@@ -2,7 +2,7 @@ use crate::model::bond::{Bond, BondOrder};
 use nom::branch::alt;
 use nom::bytes::complete::tag;
 use nom::combinator::map;
-use nom::IResult;
+use nom::{IResult, Parser};
 
 pub fn parse_bond(input: &str) -> IResult<&str, Bond> {
     let (input, bond_order) = alt((
@@ -10,7 +10,8 @@ pub fn parse_bond(input: &str) -> IResult<&str, Bond> {
         map(tag("#"), |_| BondOrder::Triple),
         map(tag(":"), |_| BondOrder::Aromatic),
         map(tag("-"), |_| BondOrder::Single),
-    ))(input)?;
+    ))
+    .parse(input)?;
     Ok((input, Bond { order: bond_order }))
 }
 

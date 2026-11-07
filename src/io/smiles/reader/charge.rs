@@ -3,7 +3,7 @@ use nom::{
     character::complete::{char, digit1},
     combinator::map_res,
     multi::many1_count,
-    IResult,
+    IResult, Parser,
 };
 
 /// Parses a charge, which could be:
@@ -11,18 +11,18 @@ use nom::{
 /// * multiple `+` or `-` signs => return n or -n
 /// * `+` or `-` sign followed by a number => return n or -n
 pub fn parse_charge(input: &str) -> IResult<&str, i8> {
-    let (input, sign) = alt((char('+'), char('-')))(input)?;
+    let (input, sign) = alt((char('+'), char('-'))).parse(input)?;
     let charge = match sign {
         '+' => 1,
         '-' => -1,
         _ => unreachable!("charge is either + or -"),
     };
-    let sign_result = many1_count(char(sign))(input);
+    let sign_result = many1_count(char(sign)).parse(input);
     if sign_result.is_ok() {
         let (input, sign_count) = sign_result?;
         return Ok((input, charge * (sign_count + 1) as i8));
     }
-    let digit_result = map_res(digit1, str::parse::<u8>)(input);
+    let digit_result = map_res(digit1, str::parse::<u8>).parse(input);
     if digit_result.is_ok() {
         let (input, count) = digit_result?;
         Ok((input, charge * count as i8))
