@@ -18,7 +18,8 @@ pub struct SearchResult {
 pub enum SearchMode {
     /// The `limit` most similar records, best first.
     Best,
-    /// The first `limit` records in file order; stops reading early.
+    /// The first `limit` records in index order, by bit count and then by line; stops
+    /// reading early.
     First,
 }
 
@@ -84,10 +85,11 @@ pub fn similarity_search(
     )]
     // SAFETY: as above, nothing in ringo changes the mapped file while it is mapped
     let map = unsafe { Mmap::map(&fif) }.map_err(with_path(&fp_path))?;
+    let records_start = header.records_start();
     let expected_len = header
         .count
         .checked_mul(item_size as u64)
-        .and_then(|records| records.checked_add(INDEX_HEADER_SIZE as u64));
+        .and_then(|records| records.checked_add(records_start as u64));
     if expected_len != Some(map.len() as u64) {
         return Err(stale(format!(
             "{fp_path} does not hold the {} records its header lists",
@@ -95,18 +97,46 @@ pub fn similarity_search(
         )));
     }
 
+    // the groups that can reach min_similarity: the bound rises up to the query's bit count
+    // and falls after it, so they are one run of records
+    let query_ones = query_words.iter().map(|w| w.count_ones() as usize).sum();
+    let bad_table = || {
+        stale(format!(
+            "{fp_path}: group table does not add up to {} records",
+            header.count
+        ))
+    };
+    let (mut first, mut last, mut start) = (None, 0, 0usize);
+    let table = &map[INDEX_HEADER_SIZE..records_start];
+    for (ones, group_len) in (header.min_ones..).zip(table.as_chunks::<8>().0) {
+        let end = usize::try_from(u64::from_le_bytes(*group_len))
+            .ok()
+            .and_then(|group_len| start.checked_add(group_len))
+            .ok_or_else(bad_table)?;
+        if can_reach(ones, query_ones, min_similarity) {
+            first.get_or_insert(start);
+            last = end;
+        }
+        start = end;
+    }
+    if start as u64 != header.count {
+        return Err(bad_table());
+    }
+    let first = first.unwrap_or(last);
+
     let mut hits = scan(
-        &map[INDEX_HEADER_SIZE..],
+        &map[records_start + first * item_size..records_start + last * item_size],
         item_size,
         &query_words,
+        query_ones,
         min_similarity..=max_similarity,
         limit,
         mode,
     )?;
     if mode == SearchMode::Best {
-        // best first; the sort is stable, so ties keep file order
+        // best first, ties in line order
         // shortcut: keeps every hit in memory, use a bounded BinaryHeap if low thresholds on huge files run out of memory
-        hits.sort_by(|a, b| b.0.total_cmp(&a.0));
+        hits.sort_unstable_by(|a, b| b.0.total_cmp(&a.0).then(a.1.cmp(&b.1)));
     }
     hits.truncate(limit);
 
@@ -127,20 +157,20 @@ pub fn similarity_search(
 type Hits = Vec<(f32, usize)>;
 
 /// `(similarity, line offset)` of the `item_size`-byte `records` whose similarity is in
-/// `range`, in file order. In `first` mode only the first `limit` hits are complete.
+/// `range`, in the order of `records`. In `first` mode only the first `limit` hits are complete.
 ///
-/// Threads take 1 MiB blocks of whole records in file order and score them in place, so the
-/// finished blocks are always a prefix of the file: once they hold `limit` hits, the first
+/// Threads take 1 MiB blocks of whole records in order and score them in place, so the
+/// finished blocks are always a prefix of `records`: once they hold `limit` hits, the first
 /// `limit` hits are among them.
 fn scan(
     records: &[u8],
     item_size: usize,
     query_words: &[u64],
+    query_ones: usize,
     range: RangeInclusive<f32>,
     limit: usize,
     mode: SearchMode,
 ) -> io::Result<Hits> {
-    let query_ones = query_words.iter().map(|w| w.count_ones() as usize).sum();
     let block_len = ((1 << 20) / item_size).max(1) * item_size;
     let next_block = AtomicUsize::new(0);
     let found = AtomicUsize::new(0);
@@ -198,13 +228,24 @@ fn tanimoto(record: &[u8], query_words: &[u64], query_ones: usize) -> Option<f32
     (ones > 0).then(|| common as f32 / (ones + query_ones - common) as f32)
 }
 
+/// Whether a record with `ones` bits set can score `min_similarity` against a query with
+/// `query_ones`: at best it shares every bit of the smaller one. Divides like `tanimoto`, and
+/// rounding keeps the order of exact quotients, so it never rules out a record that matches.
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "counts above 2^24 bits round the same way in tanimoto"
+)]
+fn can_reach(ones: usize, query_ones: usize, min_similarity: f32) -> bool {
+    ones > 0 && ones.min(query_ones) as f32 / ones.max(query_ones) as f32 >= min_similarity
+}
+
 #[cfg(test)]
 mod test {
     use crate::db::index::test::{copy_sample_molecules, TestDir};
     use crate::db::index::{index_file, DEFAULT_BATCH_LINES};
     use crate::db::index_item::index_item_size;
     use crate::db::search::SearchMode::{Best, First};
-    use crate::db::search::{scan, similarity_search, tanimoto};
+    use crate::db::search::{can_reach, scan, similarity_search, tanimoto};
     use crate::io::smiles::reader::molecule::parse_molecule;
     use crate::math::similarity::tanimoto::tanimoto_bitset;
 
@@ -229,6 +270,91 @@ mod test {
             }
         }
         assert_eq!(tanimoto(&[0; 128], &[u64::MAX; 16], 1024), None);
+    }
+
+    #[test]
+    fn test_can_reach_keeps_every_possible_score() {
+        // every score a record can have, used as the threshold, which is where rounding
+        // could drop a group
+        for query_ones in 0..=100 {
+            for ones in 1..=100 {
+                for common in 0..=ones.min(query_ones) {
+                    let mut record = vec![0u8; 128];
+                    let mut query = [0u64; 16];
+                    for bit in 0..ones {
+                        record[bit / 8] |= 1 << (bit % 8);
+                    }
+                    // the query shares `common` bits with the record, the rest lie after them
+                    for bit in (ones - common)..(ones - common + query_ones) {
+                        query[bit / 64] |= 1 << (bit % 64);
+                    }
+                    let score = tanimoto(&record, &query, query_ones).unwrap();
+                    assert!(
+                        can_reach(ones, query_ones, score),
+                        "{ones} bits, query {query_ones}, common {common}"
+                    );
+                }
+            }
+        }
+        assert!(!can_reach(0, 10, 0.0));
+        assert!(!can_reach(10, 30, 0.34));
+        assert!(!can_reach(30, 10, 0.34));
+    }
+
+    #[test]
+    fn test_search_matches_full_scan() {
+        let dir = TestDir::new("test_search_full_scan");
+        let smiles_file = dir.path().join("m.smi");
+        let smiles = [
+            "C",
+            "CCO",
+            "CC(=O)O",
+            "c1ccccc1",
+            "c1ccccc1O",
+            "CC(=O)Oc1ccccc1C(=O)O",
+            "CC(C)CC1=CC=C(C=C1)C(C)C(=O)O",
+            "CN1C=NC2=C1C(=O)N(C(=O)N2C)C",
+            "CC(C)NCC(O)COc1cccc2ccccc12",
+            "CN1CCC23C4C1CC5=C2C(=C(C=C5)O)OC3C(C=C4)O",
+            "C1CCCCC1",
+            "C(",
+            "OC(=O)CCCCCCCCCCCCCCCCC",
+            "Nc1ccc(cc1)S(=O)(=O)N",
+            "CC(=O)Nc1ccc(O)cc1",
+        ];
+        std::fs::write(&smiles_file, smiles.join("\n")).unwrap();
+        let smiles_file = smiles_file.to_str().unwrap();
+        index_file(smiles_file, 2, 512, DEFAULT_BATCH_LINES).unwrap();
+
+        let fp = |s| parse_molecule(s).ok().map(|(_, m)| m.ecfp(2, 512));
+        for query in [
+            "CCO",
+            "c1ccccc1O",
+            "CC(=O)Oc1ccccc1C(=O)O",
+            "CC(=O)Nc1ccc(O)cc1",
+        ] {
+            let query_fp = fp(query).unwrap();
+            for min_similarity in [0.0, 0.1, 0.3, 0.5, 0.7, 0.8, 0.95, 1.0] {
+                // score every line, best first and ties in line order
+                let mut expected: Vec<(f32, &str)> = smiles
+                    .iter()
+                    .filter_map(|line| {
+                        let line_fp = fp(line).filter(|f| f.0.count_ones(..) > 0)?;
+                        let similarity = tanimoto_bitset(&line_fp.0, &query_fp.0);
+                        (similarity >= min_similarity).then_some((similarity, *line))
+                    })
+                    .collect();
+                expected.sort_by(|a, b| b.0.total_cmp(&a.0));
+
+                let results =
+                    similarity_search(smiles_file, query, min_similarity, 1.0, 100, Best).unwrap();
+                let results: Vec<(f32, &str)> = results
+                    .iter()
+                    .map(|r| (r.similarity, r.line.trim_end()))
+                    .collect();
+                assert_eq!(results, expected, "{query} at {min_similarity}");
+            }
+        }
     }
 
     #[test]
@@ -288,17 +414,32 @@ mod test {
         assert!(results.iter().all(|r| r.line.trim_end() != "CCC"));
     }
 
+    /// `lines` in index order: by bit count, then in line order
+    fn index_order<'a>(lines: &[&'a str], bits: usize) -> Vec<&'a str> {
+        let mut sorted = lines.to_vec();
+        sorted.sort_by_key(|line| {
+            parse_molecule(line)
+                .unwrap()
+                .1
+                .ecfp(2, bits)
+                .0
+                .count_ones(..)
+        });
+        sorted
+    }
+
     #[test]
-    fn test_search_first_mode_keeps_file_order() {
+    fn test_search_first_mode_keeps_index_order() {
         let dir = TestDir::new("test_search_first_mode");
         let smiles_file = dir.path().join("m.smi");
-        std::fs::write(&smiles_file, "CCO\nCCN\nCCC\n").unwrap();
+        let smiles = ["CCO", "CCN", "CCC", "c1ccccc1O", "CC"];
+        std::fs::write(&smiles_file, smiles.join("\n")).unwrap();
         let smiles_file = smiles_file.to_str().unwrap();
         index_file(smiles_file, 2, 512, DEFAULT_BATCH_LINES).unwrap();
 
-        let results = similarity_search(smiles_file, "CCC", 0.0, 1.0, 2, First).unwrap();
+        let results = similarity_search(smiles_file, "CCC", 0.0, 1.0, 4, First).unwrap();
         let lines: Vec<&str> = results.iter().map(|r| r.line.trim_end()).collect();
-        assert_eq!(lines, ["CCO", "CCN"]);
+        assert_eq!(lines, index_order(&smiles, 512)[..4]);
     }
 
     #[test]
@@ -321,7 +462,8 @@ mod test {
     fn test_search_reads_across_blocks() {
         let dir = TestDir::new("test_search_across_blocks");
         let smiles_file = dir.path().join("m.smi");
-        std::fs::write(&smiles_file, "CCO\nCCN\nCCC\nCCCC\nCCCCO\n").unwrap();
+        let smiles = ["CCO", "CCN", "CCC", "CCCC", "CCCCO"];
+        std::fs::write(&smiles_file, smiles.join("\n")).unwrap();
         let smiles_file = smiles_file.to_str().unwrap();
         // 400 KB records, so a 1 MiB block holds 2 and the last block holds 1
         index_file(smiles_file, 2, 3_200_000, DEFAULT_BATCH_LINES).unwrap();
@@ -331,7 +473,7 @@ mod test {
         assert_eq!(results[0].line.trim_end(), "CCC");
         let results = similarity_search(smiles_file, "CCC", 0.0, 1.0, 3, First).unwrap();
         let lines: Vec<&str> = results.iter().map(|r| r.line.trim_end()).collect();
-        assert_eq!(lines, ["CCO", "CCN", "CCC"]);
+        assert_eq!(lines, index_order(&smiles, 3_200_000)[..3]);
     }
 
     #[test]
@@ -349,6 +491,7 @@ mod test {
                 &records,
                 index_item_size(512),
                 &[u64::MAX; 8],
+                512,
                 0.0..=1.0,
                 limit,
                 mode,
