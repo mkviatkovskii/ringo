@@ -1,15 +1,52 @@
 use crate::model::bond::{Bond, BondOrder};
+use petgraph::stable_graph::NodeIndex;
 use winnow::combinator::alt;
 use winnow::prelude::*;
 
-pub fn parse_bond(input: &mut &str) -> ModalResult<Bond> {
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ParsedBond {
+    pub order: BondOrder,
+    donor_at_start: Option<bool>,
+}
+
+impl ParsedBond {
+    pub(crate) fn covalent(order: BondOrder) -> Self {
+        Self {
+            order,
+            donor_at_start: None,
+        }
+    }
+
+    pub(crate) fn reversed(mut self) -> Self {
+        self.donor_at_start = self.donor_at_start.map(|at_start| !at_start);
+        self
+    }
+
+    pub(crate) fn bind(self, start: NodeIndex, end: NodeIndex) -> Bond {
+        Bond {
+            order: self.order,
+            donor: self
+                .donor_at_start
+                .map(|at_start| if at_start { start } else { end }),
+        }
+    }
+}
+
+pub(crate) fn parse_bond(input: &mut &str) -> ModalResult<ParsedBond> {
     alt((
-        '='.value(BondOrder::Double),
-        '#'.value(BondOrder::Triple),
-        ':'.value(BondOrder::Aromatic),
-        '-'.value(BondOrder::Single),
+        "->".value(ParsedBond {
+            order: BondOrder::Dative,
+            donor_at_start: Some(true),
+        }),
+        "<-".value(ParsedBond {
+            order: BondOrder::Dative,
+            donor_at_start: Some(false),
+        }),
+        '='.value(ParsedBond::covalent(BondOrder::Double)),
+        '#'.value(ParsedBond::covalent(BondOrder::Triple)),
+        ':'.value(ParsedBond::covalent(BondOrder::Aromatic)),
+        '-'.value(ParsedBond::covalent(BondOrder::Single)),
     ))
-    .map(|order| Bond { order })
     .parse_next(input)
 }
 

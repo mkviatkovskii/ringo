@@ -117,7 +117,7 @@ impl Molecule {
                 BondOrder::Double if in_ring => ring_double = true,
                 BondOrder::Aromatic if in_ring => ring_aromatic = true,
                 // an aromatic bond outside rings, like biphenyl's link, ends up single
-                BondOrder::Single | BondOrder::Aromatic => {}
+                BondOrder::Single | BondOrder::Aromatic | BondOrder::Dative => {}
                 BondOrder::Double => {
                     let other = if edge.source() == node {
                         edge.target()
@@ -138,8 +138,13 @@ impl Molecule {
         if ring_double {
             return Some(1);
         }
-        let neighbours =
-            self.graph.edges(node).count() + usize::from(atom.hs) + usize::from(atom.implicit_hs);
+        let neighbours = self
+            .graph
+            .edges(node)
+            .filter(|edge| edge.weight().order != BondOrder::Dative)
+            .count()
+            + usize::from(atom.hs)
+            + usize::from(atom.implicit_hs);
         match (atom.element.atomic_number, atom.charge) {
             // a lone pair: pyrrole's N, furan's O, thiophene's S
             (7 | 15, 0) if neighbours == 3 => Some(2),
@@ -165,7 +170,10 @@ impl Molecule {
     fn rings(&self) -> Vec<Vec<NodeIndex>> {
         let mut seen: HashSet<Vec<NodeIndex>> = HashSet::new();
         let mut rings = Vec::new();
-        for edge in (&self.graph).edge_references() {
+        for edge in (&self.graph)
+            .edge_references()
+            .filter(|edge| edge.weight().order != BondOrder::Dative)
+        {
             let Some(ring) = self.shortest_path_without(edge.source(), edge.target(), edge.id())
             else {
                 continue;
@@ -199,7 +207,11 @@ impl Molecule {
                 }
                 return Some(path);
             }
-            for edge in self.graph.edges(node).filter(|edge| edge.id() != skip) {
+            for edge in self
+                .graph
+                .edges(node)
+                .filter(|edge| edge.id() != skip && edge.weight().order != BondOrder::Dative)
+            {
                 let next = if edge.source() == node {
                     edge.target()
                 } else {

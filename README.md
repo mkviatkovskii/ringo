@@ -1,6 +1,14 @@
 # Ringo
 File chemical search engine written in Rust.
 
+The reader accepts dative bonds (`->`, `<-`) in chains, branches and ring
+closures. `BondOrder::Dative` and `Bond::donor` preserve the electron-pair donor.
+The bond contributes one to the acceptor's valence and zero to the donor's when
+computing implicit hydrogens. Covalent aromaticity and fingerprint ring membership
+exclude dative bonds; fingerprint degree and neighbourhoods include them, with
+different codes for the donor and acceptor ends. Reversing SMILES traversal
+preserves the fingerprint. Existing covalent fingerprints are unchanged.
+
 The SMILES reader preserves tetrahedral (`@`, `@@`, `@TH1`, `@TH2`),
 trigonal-bipyramidal (`@TB1`–`@TB20`), octahedral (`@OH1`–`@OH30`),
 and ordinary double-bond (`/`, `\`) configurations. Use
