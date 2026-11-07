@@ -81,4 +81,25 @@ mod test {
         let results = similarity_search(smiles_file, "CC(C)CC1=CC=C(C=C1)C(C)C(=O)O", 0.5, 100);
         assert_eq!(results.len(), 2);
     }
+
+    #[test]
+    fn test_search_returns_correct_lines_for_lf_and_crlf() {
+        for (name, ending) in [("lf", "\n"), ("crlf", "\r\n")] {
+            let dir = TestDir::new(&format!("test_search_line_endings_{name}"));
+            let smiles_file = dir.path().join("m.smi");
+            let content = ["CCO ethanol", "CCN ethylamine", "CCC propane"].join(ending) + ending;
+            std::fs::write(&smiles_file, content).unwrap();
+            let smiles_file = smiles_file.to_str().unwrap();
+            index_file(smiles_file);
+
+            let results = similarity_search(smiles_file, "CCC", 0.0, 10);
+            let mut lines: Vec<&str> = results.iter().map(|r| r.line.trim_end()).collect();
+            lines.sort();
+            assert_eq!(
+                lines,
+                ["CCC propane", "CCN ethylamine", "CCO ethanol"],
+                "{name}"
+            );
+        }
+    }
 }

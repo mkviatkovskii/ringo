@@ -3,12 +3,7 @@ use crate::io::smiles::reader::molecule::parse_molecule;
 use crate::model::fingerprint::{Fingerprint, FINGERPRINT_SIZE};
 use fixedbitset::FixedBitSet;
 use std::fs::File;
-use std::io::{BufRead, BufWriter, Write};
-
-#[cfg(windows)]
-const LINE_ENDING_LENGTH: usize = 2;
-#[cfg(not(windows))]
-const LINE_ENDING_LENGTH: usize = 1;
+use std::io::{BufRead, BufReader, BufWriter, Write};
 
 /// Writes `<smiles_file>.fp` and returns how many lines could not be parsed.
 /// Those lines get an empty fingerprint, so records stay aligned with lines.
@@ -23,9 +18,16 @@ pub fn index_file(smiles_file: &str) -> usize {
     let mut skipped = 0;
     let mut writer = BufWriter::new(File::create(&tmp_path).unwrap());
 
-    for line in std::io::BufReader::new(fi).lines() {
-        let line = line.unwrap();
-        let fingerprint = match parse_molecule(&line) {
+    let mut reader = BufReader::new(fi);
+    let mut line = String::new();
+    loop {
+        line.clear();
+        // read_line returns the bytes consumed, including "\n" or "\r\n"
+        let read = reader.read_line(&mut line).unwrap();
+        if read == 0 {
+            break;
+        }
+        let fingerprint = match parse_molecule(line.trim_end_matches(['\n', '\r'])) {
             Ok((_, molecule)) => molecule.ecfp(2, 512),
             Err(_) => {
                 skipped += 1;
@@ -36,7 +38,7 @@ pub fn index_file(smiles_file: &str) -> usize {
             position: offset,
             fingerprint,
         };
-        offset += line.len() + LINE_ENDING_LENGTH;
+        offset += read;
 
         writer.write_all(&index_item.to_bytes()).unwrap();
     }
