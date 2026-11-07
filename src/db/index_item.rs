@@ -1,7 +1,9 @@
-use crate::model::fingerprint::{Fingerprint, FINGERPRINT_BYTES};
+use crate::model::fingerprint::Fingerprint;
 
-/// On-disk record: `u64` little-endian line offset, then fingerprint bytes.
-pub const INDEX_ITEM_SIZE: usize = 8 + FINGERPRINT_BYTES;
+/// On-disk record: `u64` little-endian line offset, then `bits / 8` fingerprint bytes.
+pub fn index_item_size(bits: usize) -> usize {
+    8 + bits / 8
+}
 
 #[derive(Debug)]
 pub struct IndexItem {
@@ -10,25 +12,25 @@ pub struct IndexItem {
 }
 
 impl IndexItem {
-    pub fn to_bytes(&self) -> [u8; INDEX_ITEM_SIZE] {
-        let mut bytes = [0u8; INDEX_ITEM_SIZE];
-        bytes[..8].copy_from_slice(&(self.position as u64).to_le_bytes());
-        bytes[8..].copy_from_slice(&self.fingerprint.to_bytes());
+    pub fn to_bytes(&self) -> Vec<u8> {
+        let mut bytes = (self.position as u64).to_le_bytes().to_vec();
+        bytes.extend(self.fingerprint.to_bytes());
         bytes
     }
 
-    pub fn from_bytes(bytes: &[u8; INDEX_ITEM_SIZE]) -> IndexItem {
-        let position = u64::from_le_bytes(bytes[..8].try_into().unwrap());
+    pub fn from_bytes(bytes: &[u8]) -> IndexItem {
+        let (position, fingerprint) = bytes.split_first_chunk::<8>().unwrap();
         IndexItem {
-            position: usize::try_from(position).expect("offset does not fit in usize"),
-            fingerprint: Fingerprint::from_bytes(bytes[8..].try_into().unwrap()),
+            position: usize::try_from(u64::from_le_bytes(*position))
+                .expect("offset does not fit in usize"),
+            fingerprint: Fingerprint::from_bytes(fingerprint),
         }
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::db::index_item::{IndexItem, INDEX_ITEM_SIZE};
+    use crate::db::index_item::{index_item_size, IndexItem};
     use crate::model::fingerprint::Fingerprint;
     use fixedbitset::FixedBitSet;
 
@@ -61,8 +63,8 @@ mod tests {
             fingerprint: Fingerprint(fp),
         };
         let bytes = ii.to_bytes();
-        assert_eq!(bytes.len(), INDEX_ITEM_SIZE);
-        assert_eq!(INDEX_ITEM_SIZE, 72);
+        assert_eq!(bytes.len(), index_item_size(512));
+        assert_eq!(index_item_size(512), 72);
 
         let decoded = IndexItem::from_bytes(&bytes);
         assert_eq!(decoded.position, u32::MAX as usize);

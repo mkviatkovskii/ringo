@@ -1,6 +1,6 @@
 use crate::model::atom::Atom;
 use crate::model::bond::Bond;
-use crate::model::fingerprint::{Fingerprint, FINGERPRINT_SIZE};
+use crate::model::fingerprint::Fingerprint;
 use crate::model::molecule::Molecule;
 use fixedbitset::FixedBitSet;
 use petgraph::graph::NodeIndex;
@@ -9,8 +9,9 @@ use petgraph::Undirected;
 use std::hash::{DefaultHasher, Hasher};
 
 impl Molecule {
-    pub fn ecfp(&self, radius: usize, fp_length: usize) -> Fingerprint {
-        let mut fp = FixedBitSet::with_capacity(FINGERPRINT_SIZE);
+    /// `bits` must be above 0; the index stores both values in its header.
+    pub fn ecfp(&self, radius: usize, bits: usize) -> Fingerprint {
+        let mut fp = FixedBitSet::with_capacity(bits);
 
         for node in self.graph.node_indices() {
             ecfp_recursive(
@@ -19,7 +20,6 @@ impl Molecule {
                 1,
                 node,
                 &mut fp,
-                fp_length,
                 &mut DefaultHasher::new(),
             );
         }
@@ -34,7 +34,6 @@ fn ecfp_recursive(
     depth: usize,
     node: NodeIndex,
     fp: &mut FixedBitSet,
-    fp_length: usize,
     hasher: &mut DefaultHasher,
 ) {
     if depth > radius {
@@ -48,7 +47,7 @@ fn ecfp_recursive(
     hasher.write_u8(atom.hs);
 
     let value = hasher.clone().finish();
-    fp.insert(value as usize % fp_length);
+    fp.insert(value as usize % fp.len());
 
     for edge in graph.edges(node) {
         let bond = edge.weight();
@@ -60,7 +59,7 @@ fn ecfp_recursive(
             edge.source()
         };
 
-        ecfp_recursive(graph, radius, depth + 1, target, fp, fp_length, hasher);
+        ecfp_recursive(graph, radius, depth + 1, target, fp, hasher);
     }
 }
 
@@ -73,12 +72,23 @@ mod test {
         let ecfp_ibuprofen = parse_molecule("CC(C)CC1=CC=C(C=C1)C(C)C(=O)O")
             .unwrap()
             .1
-            .ecfp(2, 128);
+            .ecfp(2, 512);
         let ecfp_naproxen = parse_molecule("CC(C1=CC2=C(C=C1)C=C(C=C2)OC)C(=O)O")
             .unwrap()
             .1
-            .ecfp(2, 128);
+            .ecfp(2, 512);
         let sim = tanimoto_bitset(&ecfp_ibuprofen.0, &ecfp_naproxen.0);
-        assert!(0.53 < sim && sim < 0.54);
+        assert!(0.51 < sim && sim < 0.52);
+    }
+
+    #[test]
+    fn test_ecfp_large_length() {
+        // used to panic: bit positions went past the fixed 512-bit set
+        let fp = parse_molecule("CC(C)CC1=CC=C(C=C1)C(C)C(=O)O")
+            .unwrap()
+            .1
+            .ecfp(2, 2048);
+        assert_eq!(fp.0.len(), 2048);
+        assert!(fp.0.count_ones(..) > 0);
     }
 }

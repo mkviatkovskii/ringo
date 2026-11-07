@@ -1,13 +1,17 @@
+use crate::db::index_header::IndexHeader;
 use crate::db::index_item::IndexItem;
 use crate::io::smiles::reader::molecule::parse_molecule;
-use crate::model::fingerprint::{Fingerprint, FINGERPRINT_SIZE};
+use crate::model::fingerprint::Fingerprint;
 use fixedbitset::FixedBitSet;
 use std::fs::File;
 use std::io::{BufRead, BufReader, BufWriter, Write};
 
-/// Writes `<smiles_file>.fp` and returns how many lines could not be parsed.
+/// Writes `<smiles_file>.fp` with ECFP fingerprints of the given radius and length
+/// (a positive multiple of 64), and returns how many lines could not be parsed.
 /// Those lines get an empty fingerprint, so records stay aligned with lines.
-pub fn index_file(smiles_file: &str) -> usize {
+pub fn index_file(smiles_file: &str, radius: usize, bits: usize) -> usize {
+    let header = IndexHeader::new(radius, bits).unwrap_or_else(|e| panic!("{e}"));
+
     // open file for reading
     let fi = File::open(smiles_file).expect("Could not open file");
 
@@ -17,6 +21,7 @@ pub fn index_file(smiles_file: &str) -> usize {
     let mut offset = 0;
     let mut skipped = 0;
     let mut writer = BufWriter::new(File::create(&tmp_path).unwrap());
+    writer.write_all(&header.to_bytes()).unwrap();
 
     let mut reader = BufReader::new(fi);
     let mut line = String::new();
@@ -28,10 +33,10 @@ pub fn index_file(smiles_file: &str) -> usize {
             break;
         }
         let fingerprint = match parse_molecule(line.trim_end_matches(['\n', '\r'])) {
-            Ok((_, molecule)) => molecule.ecfp(2, 512),
+            Ok((_, molecule)) => molecule.ecfp(radius, bits),
             Err(_) => {
                 skipped += 1;
-                Fingerprint(FixedBitSet::with_capacity(FINGERPRINT_SIZE))
+                Fingerprint(FixedBitSet::with_capacity(bits))
             }
         };
         let index_item = IndexItem {
@@ -51,7 +56,8 @@ pub fn index_file(smiles_file: &str) -> usize {
 #[cfg(test)]
 pub(crate) mod test {
     use crate::db::index::index_file;
-    use crate::db::index_item::INDEX_ITEM_SIZE;
+    use crate::db::index_header::{IndexHeader, INDEX_HEADER_SIZE};
+    use crate::db::index_item::index_item_size;
     use std::path::{Path, PathBuf};
 
     /// Per-test scratch directory under the system temp dir, removed on drop
@@ -90,14 +96,13 @@ pub(crate) mod test {
     fn test_index() {
         let dir = TestDir::new("test_index");
         let smiles_file = copy_sample_molecules(dir.path());
-        index_file(smiles_file.to_str().unwrap());
+        index_file(smiles_file.to_str().unwrap(), 3, 1024);
 
-        let fp_file = dir.path().join("molecules.smi.fp");
-        // 2 molecules, one fixed-size record each
-        assert_eq!(
-            std::fs::metadata(fp_file).unwrap().len(),
-            2 * INDEX_ITEM_SIZE as u64
-        );
+        let fp = std::fs::read(dir.path().join("molecules.smi.fp")).unwrap();
+        // header, then 2 molecules, one fixed-size record each
+        assert_eq!(fp.len(), INDEX_HEADER_SIZE + 2 * index_item_size(1024));
+        let header = IndexHeader::from_bytes(fp[..INDEX_HEADER_SIZE].try_into().unwrap());
+        assert_eq!(header, IndexHeader::new(3, 1024));
     }
 
     #[test]
@@ -107,13 +112,13 @@ pub(crate) mod test {
         // the chiral line is not supported yet and must not abort indexing
         std::fs::write(&smiles_file, "CCO\nN[C@H](C)C(=O)O\nCCC\n").unwrap();
 
-        let skipped = index_file(smiles_file.to_str().unwrap());
+        let skipped = index_file(smiles_file.to_str().unwrap(), 2, 512);
 
         assert_eq!(skipped, 1);
         let fp_file = dir.path().join("m.smi.fp");
         assert_eq!(
             std::fs::metadata(fp_file).unwrap().len(),
-            3 * INDEX_ITEM_SIZE as u64
+            (INDEX_HEADER_SIZE + 3 * index_item_size(512)) as u64
         );
         assert!(!dir.path().join("m.smi.fp.tmp").exists());
     }

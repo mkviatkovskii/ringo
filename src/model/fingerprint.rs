@@ -1,33 +1,31 @@
 use fixedbitset::{Block, FixedBitSet};
 
-pub const FINGERPRINT_SIZE: usize = 512;
-pub const FINGERPRINT_BYTES: usize = FINGERPRINT_SIZE / 8;
-
 #[derive(Debug)]
 pub struct Fingerprint(pub FixedBitSet);
 
 impl Fingerprint {
     /// Bit `n` goes to byte `n / 8` (little-endian blocks), so the layout is the same
-    /// on 32- and 64-bit targets.
-    pub fn to_bytes(&self) -> [u8; FINGERPRINT_BYTES] {
+    /// on 32- and 64-bit targets. The length must be a multiple of 64 bits.
+    pub fn to_bytes(&self) -> Vec<u8> {
         assert_eq!(
-            self.0.len(),
-            FINGERPRINT_SIZE,
-            "unexpected fingerprint size"
+            self.0.len() % 64,
+            0,
+            "fingerprint length must be a multiple of 64 bits"
         );
-        let mut bytes = [0u8; FINGERPRINT_BYTES];
-        let (chunks, _) = bytes.as_chunks_mut::<{ size_of::<Block>() }>();
-        for (chunk, block) in chunks.iter_mut().zip(self.0.as_slice()) {
-            *chunk = block.to_le_bytes();
-        }
-        bytes
+        self.0
+            .as_slice()
+            .iter()
+            .flat_map(|block| block.to_le_bytes())
+            .collect()
     }
 
-    pub fn from_bytes(bytes: &[u8; FINGERPRINT_BYTES]) -> Fingerprint {
-        let (chunks, _) = bytes.as_chunks::<{ size_of::<Block>() }>();
+    /// The fingerprint gets `bytes.len() * 8` bits.
+    pub fn from_bytes(bytes: &[u8]) -> Fingerprint {
+        let (chunks, rest) = bytes.as_chunks::<{ size_of::<Block>() }>();
+        assert!(rest.is_empty(), "fingerprint bytes must be whole blocks");
         let blocks = chunks.iter().map(|chunk| Block::from_le_bytes(*chunk));
         Fingerprint(FixedBitSet::with_capacity_and_blocks(
-            FINGERPRINT_SIZE,
+            bytes.len() * 8,
             blocks,
         ))
     }
@@ -35,12 +33,12 @@ impl Fingerprint {
 
 #[cfg(test)]
 mod tests {
-    use crate::model::fingerprint::{Fingerprint, FINGERPRINT_SIZE};
+    use crate::model::fingerprint::Fingerprint;
     use fixedbitset::FixedBitSet;
 
     #[test]
     fn test_fingerprint_encode_decode() {
-        let mut fp = Fingerprint(FixedBitSet::with_capacity(FINGERPRINT_SIZE));
+        let mut fp = Fingerprint(FixedBitSet::with_capacity(512));
         fp.0.set(1, true);
         fp.0.set(17, true);
 
@@ -50,10 +48,11 @@ mod tests {
 
     #[test]
     fn test_fingerprint_byte_layout() {
-        let mut fp = Fingerprint(FixedBitSet::with_capacity(FINGERPRINT_SIZE));
+        let mut fp = Fingerprint(FixedBitSet::with_capacity(512));
         fp.0.insert(9);
         fp.0.insert(511);
         let bytes = fp.to_bytes();
+        assert_eq!(bytes.len(), 64);
         assert_eq!(bytes[1], 0b10);
         assert_eq!(bytes[63], 0b1000_0000);
         assert_eq!(bytes.iter().filter(|b| **b != 0).count(), 2);
@@ -61,9 +60,12 @@ mod tests {
 
     #[test]
     fn test_fingerprint_dense_round_trip() {
-        let mut fp = Fingerprint(FixedBitSet::with_capacity(FINGERPRINT_SIZE));
-        fp.0.insert_range(..);
-        let decoded = Fingerprint::from_bytes(&fp.to_bytes());
-        assert_eq!(decoded.0.count_ones(..), FINGERPRINT_SIZE);
+        for bits in [64, 512, 1024] {
+            let mut fp = Fingerprint(FixedBitSet::with_capacity(bits));
+            fp.0.insert_range(..);
+            let decoded = Fingerprint::from_bytes(&fp.to_bytes());
+            assert_eq!(decoded.0.len(), bits);
+            assert_eq!(decoded.0.count_ones(..), bits);
+        }
     }
 }
