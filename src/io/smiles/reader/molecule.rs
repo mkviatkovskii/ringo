@@ -3,16 +3,28 @@ use crate::io::smiles::reader::bond::parse_bond;
 use crate::model::atom::Atom;
 use crate::model::bond::{Bond, BondOrder};
 use crate::model::molecule::Molecule;
-use petgraph::stable_graph::NodeIndex;
-use std::collections::HashMap;
+use petgraph::algo::bridges;
+use petgraph::stable_graph::{EdgeIndex, NodeIndex};
+use petgraph::visit::EdgeRef;
+use std::collections::{HashMap, HashSet};
 use winnow::combinator::{alt, preceded, repeat};
 use winnow::error::{ContextError, ErrMode};
 use winnow::prelude::*;
 use winnow::stream::AsChar;
 use winnow::token::take_while;
 
-// the atom carries whether it was written in brackets
-type Token = (Option<(Atom, bool)>, Option<Bond>, Option<u8>, Option<bool>);
+enum Token {
+    /// The atom, and whether it was written in brackets.
+    Atom(Atom, bool),
+    Bond(BondOrder),
+    Ring(u8),
+    Open,
+    Close,
+    Dot,
+}
+
+// a bond with no symbol is None until both its atoms are known
+type PendingBond = (NodeIndex, NodeIndex, Option<BondOrder>);
 
 /// A ring-closure number: one digit, or `%` and exactly two digits, so `12` is rings 1 and 2.
 fn parse_cycle_digit(input: &mut &str) -> ModalResult<u8> {
@@ -26,8 +38,13 @@ fn parse_cycle_digit(input: &mut &str) -> ModalResult<u8> {
 
 /// Hydrogens an atom outside brackets gets: the lowest normal valence that
 /// fits its bonds, minus the bonds (`OpenSMILES` organic subset rules).
-fn implicit_hydrogens(molecule: &Molecule, node: NodeIndex, atomic_number: u8) -> u8 {
-    let valences: &[u8] = match atomic_number {
+fn implicit_hydrogens(
+    molecule: &Molecule,
+    node: NodeIndex,
+    atomic_number: u8,
+    aromatic: bool,
+) -> u8 {
+    let mut valences: &[u8] = match atomic_number {
         5 => &[3],
         6 => &[4],
         7 | 15 => &[3, 5],
@@ -37,7 +54,7 @@ fn implicit_hydrogens(molecule: &Molecule, node: NodeIndex, atomic_number: u8) -
         _ => &[],
     };
     let mut bonds: u8 = 0;
-    let mut aromatic = false;
+    let mut aromatic = aromatic;
     for edge in molecule.graph.edges(node) {
         bonds += match edge.weight().order {
             BondOrder::Single => 1,
@@ -49,14 +66,47 @@ fn implicit_hydrogens(molecule: &Molecule, node: NodeIndex, atomic_number: u8) -
             }
         };
     }
-    // an aromatic atom also spends one electron on the ring
+    // an aromatic atom also spends one electron on the ring, and keeps its lowest
+    // valence: the s in thiophene has no hydrogen
     if aromatic {
         bonds += 1;
+        valences = &valences[..valences.len().min(1)];
     }
     valences
         .iter()
         .find(|&&valence| valence >= bonds)
         .map_or(0, |valence| valence - bonds)
+}
+
+/// Adds the bonds, giving each one with no symbol its order: aromatic between two
+/// aromatic atoms in a ring, single otherwise.
+fn add_bonds(molecule: &mut Molecule, pending_bonds: Vec<PendingBond>) {
+    let mut implicit_aromatic: Vec<EdgeIndex> = Vec::new();
+    for (node1, node2, order) in pending_bonds {
+        let aromatic = |node| molecule.get_atom(node).is_some_and(|atom| atom.aromatic);
+        let both_aromatic = aromatic(node1) && aromatic(node2);
+        let bond = Bond {
+            order: order.unwrap_or(if both_aromatic {
+                BondOrder::Aromatic
+            } else {
+                BondOrder::Single
+            }),
+        };
+        let edge = molecule.add_bond(node1, node2, bond);
+        if order.is_none() && both_aromatic {
+            implicit_aromatic.push(edge);
+        }
+    }
+    // a bond outside any ring, like the one joining the rings of biphenyl
+    // "c1ccccc1c1ccccc1", is single even between aromatic atoms
+    let ring_free: HashSet<EdgeIndex> = bridges(&molecule.graph).map(|edge| edge.id()).collect();
+    for edge in implicit_aromatic {
+        if ring_free.contains(&edge) {
+            if let Some(bond) = molecule.graph.edge_weight_mut(edge) {
+                bond.order = BondOrder::Single;
+            }
+        }
+    }
 }
 
 /// Parses a molecule from the start of `input`; returns the rest (empty, or whitespace and
@@ -72,88 +122,108 @@ pub fn parse_molecule(input: &str) -> ModalResult<(&str, Molecule)> {
 
 fn parse_molecule_next(input: &mut &str) -> ModalResult<Molecule> {
     let mut molecule = Molecule::new();
-    let mut open_cycles: HashMap<u8, NodeIndex> = HashMap::new();
-    let mut stack: Vec<(NodeIndex, BondOrder)> = Vec::new();
-    let mut pending_bonds: Vec<(NodeIndex, NodeIndex, Bond)> = Vec::new();
-    let mut organic_nodes: Vec<(NodeIndex, u8)> = Vec::new();
+    let mut open_cycles: HashMap<u8, (NodeIndex, Option<BondOrder>)> = HashMap::new();
+    let mut stack: Vec<NodeIndex> = Vec::new();
+    let mut pending_bonds: Vec<PendingBond> = Vec::new();
+    let mut organic_nodes: Vec<(NodeIndex, u8, bool)> = Vec::new();
 
-    let atoms_and_bonds: Vec<Token> = repeat(
+    let tokens: Vec<Token> = repeat(
         0..,
         alt((
             parse_atom
                 .with_taken()
-                .map(|(atom, taken)| (Some((atom, taken.starts_with('['))), None, None, None)),
-            parse_bond.map(|bond| (None, Some(bond), None, None)),
-            parse_cycle_digit.map(|digit| (None, None, Some(digit), None)),
-            '('.map(|_| (None, None, None, Some(true))),
-            ')'.map(|_| (None, None, None, Some(false))),
+                .map(|(atom, taken)| Token::Atom(atom, taken.starts_with('['))),
+            parse_bond.map(|bond| Token::Bond(bond.order)),
+            parse_cycle_digit.map(Token::Ring),
+            '('.map(|_| Token::Open),
+            ')'.map(|_| Token::Close),
+            '.'.map(|_| Token::Dot),
         )),
     )
     .parse_next(input)?;
 
     let mut prev_node = NodeIndex::end();
-    let mut prev_bond = BondOrder::Single;
+    let mut prev_bond = None;
+    let mut after_dot = false;
 
-    for (atom, bond, cycle_digit, open_paren) in atoms_and_bonds {
-        if let Some(open) = open_paren {
-            if open {
-                stack.push((prev_node, prev_bond));
-            } else {
-                let Some((node, bond)) = stack.pop() else {
+    for token in tokens {
+        // a '.' must stand between two atoms: "CC.", ".CC" and "C..O" are truncated or
+        // broken records, not molecules
+        if after_dot && !matches!(token, Token::Atom(..)) {
+            return Err(ErrMode::Cut(ContextError::new()));
+        }
+        // a bond symbol must be followed by an atom or a ring digit: "CC=", "C(C=)C" and
+        // "C=.C" would otherwise drop it and give a different molecule
+        if prev_bond.is_some() && !matches!(token, Token::Atom(..) | Token::Ring(_)) {
+            return Err(ErrMode::Cut(ContextError::new()));
+        }
+        match token {
+            Token::Open => stack.push(prev_node),
+            Token::Close => {
+                let Some(node) = stack.pop() else {
                     return Err(ErrMode::Cut(ContextError::new()));
                 };
                 prev_node = node;
-                prev_bond = bond;
             }
-        } else if let Some(digit) = cycle_digit {
-            // a ring bond needs an atom to start from or end at
-            if prev_node == NodeIndex::end() {
-                return Err(ErrMode::Cut(ContextError::new()));
-            }
-            if let Some(open_node) = open_cycles.remove(&digit) {
-                // "C11" would bond an atom to itself, "C1C1" bond two atoms twice
-                let bonded = |(a, b, _): &(NodeIndex, NodeIndex, Bond)| {
-                    (*a, *b) == (prev_node, open_node) || (*a, *b) == (open_node, prev_node)
-                };
-                if open_node == prev_node || pending_bonds.iter().any(bonded) {
+            Token::Ring(digit) => {
+                // a ring bond needs an atom to start from or end at
+                if prev_node == NodeIndex::end() {
                     return Err(ErrMode::Cut(ContextError::new()));
                 }
-                pending_bonds.push((prev_node, open_node, Bond { order: prev_bond }));
-                prev_bond = BondOrder::Single;
-            } else {
-                open_cycles.insert(digit, prev_node);
+                if let Some((open_node, open_bond)) = open_cycles.remove(&digit) {
+                    // "C11" would bond an atom to itself, "C1C1" bond two atoms twice
+                    let bonded = |(a, b, _): &PendingBond| {
+                        (*a, *b) == (prev_node, open_node) || (*a, *b) == (open_node, prev_node)
+                    };
+                    if open_node == prev_node || pending_bonds.iter().any(bonded) {
+                        return Err(ErrMode::Cut(ContextError::new()));
+                    }
+                    // the bond symbol may stand at either end: "C=1CCCCC1" or "C1CCCCC=1",
+                    // but not two different ones: "C=1CCCCC-1"
+                    if open_bond.is_some() && prev_bond.is_some() && open_bond != prev_bond {
+                        return Err(ErrMode::Cut(ContextError::new()));
+                    }
+                    pending_bonds.push((prev_node, open_node, prev_bond.or(open_bond)));
+                } else {
+                    open_cycles.insert(digit, (prev_node, prev_bond));
+                }
+                prev_bond = None;
             }
-        } else {
-            if let Some((atom, bracket)) = atom {
+            Token::Atom(atom, bracket) => {
                 let atomic_number = atom.element.atomic_number;
+                let aromatic = atom.aromatic;
                 let node = molecule.add_atom(atom);
                 if !bracket {
-                    organic_nodes.push((node, atomic_number));
+                    organic_nodes.push((node, atomic_number, aromatic));
                 }
-                if prev_node != NodeIndex::end() && bond.is_none() {
-                    pending_bonds.push((prev_node, node, Bond { order: prev_bond }));
+                if prev_node != NodeIndex::end() {
+                    pending_bonds.push((prev_node, node, prev_bond));
                 }
                 prev_node = node;
+                prev_bond = None;
+                after_dot = false;
             }
-
-            if let Some(bond) = bond {
-                prev_bond = bond.order;
-            } else {
-                prev_bond = BondOrder::Single;
+            // "=C", "C.=C" and ".C" have no atom before the bond or dot
+            Token::Bond(_) | Token::Dot if prev_node == NodeIndex::end() => {
+                return Err(ErrMode::Cut(ContextError::new()));
+            }
+            Token::Bond(order) => prev_bond = Some(order),
+            // the next atom starts a new, unbonded component
+            Token::Dot => {
+                prev_node = NodeIndex::end();
+                after_dot = true;
             }
         }
     }
 
-    if !open_cycles.is_empty() || !stack.is_empty() {
+    if !open_cycles.is_empty() || !stack.is_empty() || prev_bond.is_some() || after_dot {
         return Err(ErrMode::Cut(ContextError::new()));
     }
 
-    for (node1, node2, bond) in pending_bonds {
-        molecule.add_bond(node1, node2, bond);
-    }
+    add_bonds(&mut molecule, pending_bonds);
 
-    for (node, atomic_number) in organic_nodes {
-        let hs = implicit_hydrogens(&molecule, node, atomic_number);
+    for (node, atomic_number, aromatic) in organic_nodes {
+        let hs = implicit_hydrogens(&molecule, node, atomic_number, aromatic);
         if let Some(atom) = molecule.graph.node_weight_mut(node) {
             atom.implicit_hs = hs;
         }
@@ -518,8 +588,8 @@ mod tests {
 
     #[test]
     fn parse_molecule_rejects_unparsed_rest() {
-        // examples from issue #10: these used to give a partial molecule
-        for smiles in ["c1ccccc1", "Brc1ccccc1", "C%1CC%1", "CC$C", "C[C@H](O)N"] {
+        // still unsupported, so an error instead of a partial molecule
+        for smiles in ["C%1CC%1", "CC$C", "C[C@H](O)N", "Cq", "C[Xx]", "C[c"] {
             assert!(parse_molecule(smiles).is_err(), "{smiles}");
         }
         // a title after whitespace is fine, and comes back as the rest
@@ -527,6 +597,134 @@ mod tests {
         assert_eq!((rest, m.count_atoms()), (" ethanol", 3));
         let (rest, m) = parse_molecule("CCO\tethanol").unwrap();
         assert_eq!((rest, m.count_atoms()), ("\tethanol", 3));
+    }
+
+    #[test]
+    fn parse_aromatic_molecules() {
+        let hs = |smiles: &str| -> Vec<u8> {
+            let m = parse_molecule(smiles).unwrap().1;
+            m.graph
+                .node_weights()
+                .map(|atom| atom.hs + atom.implicit_hs)
+                .collect()
+        };
+        assert_eq!(hs("c1ccccc1"), [1; 6]);
+        // toluene: the substituted carbon has none
+        assert_eq!(hs("Cc1ccccc1"), [3, 0, 1, 1, 1, 1, 1]);
+        // pyridine, pyrrole, furan and thiophene: heteroatoms with no hydrogen unless written
+        assert_eq!(hs("n1ccccc1"), [0, 1, 1, 1, 1, 1]);
+        assert_eq!(hs("[nH]1cccc1"), [1, 1, 1, 1, 1]);
+        assert_eq!(hs("o1cccc1"), [0, 1, 1, 1, 1]);
+        assert_eq!(hs("s1cccc1"), [0, 1, 1, 1, 1]);
+        // fused rings: naphthalene's shared carbons have none
+        assert_eq!(hs("c1ccc2ccccc2c1"), [1, 1, 1, 0, 1, 1, 1, 1, 0, 1]);
+        // aromatic and Kekulé benzene weigh the same
+        for smiles in ["c1ccccc1", "C1=CC=CC=C1"] {
+            let m = parse_molecule(smiles).unwrap().1;
+            assert!((m.weight() - 78.114).abs() < 1e-9, "{smiles}");
+        }
+    }
+
+    #[test]
+    fn parse_aromatic_bond_orders() {
+        let orders = |smiles: &str| -> Vec<BondOrder> {
+            let m = parse_molecule(smiles).unwrap().1;
+            m.graph.edge_weights().map(|bond| bond.order).collect()
+        };
+        // unwritten bonds between aromatic atoms are aromatic, the ring closure too
+        assert_eq!(orders("c1ccccc1"), [BondOrder::Aromatic; 6]);
+        // between an aromatic and an aliphatic atom they are single
+        assert_eq!(orders("Cc1ccccc1")[0], BondOrder::Single);
+        // the bond joining biphenyl's rings is in no ring, so single
+        let biphenyl = orders("c1ccccc1c1ccccc1");
+        assert_eq!(
+            biphenyl.iter().filter(|&&o| o == BondOrder::Single).count(),
+            1
+        );
+        // a written bond wins (edge 5 is the first ring's closure, 6 the "-")
+        let written = orders("c1ccccc1-c1ccccc1");
+        assert_eq!(
+            (written[5], written[6]),
+            (BondOrder::Aromatic, BondOrder::Single)
+        );
+        assert_eq!(orders("c1ccccc1=O")[6], BondOrder::Double);
+    }
+
+    #[test]
+    fn parse_dots_wildcards_and_any_element() {
+        // a salt: two components, no bond between them
+        let m = parse_molecule("[Na+].[Cl-]").unwrap().1;
+        assert_eq!((m.count_atoms(), m.count_bonds()), (2, 0));
+        assert!((m.weight() - 58.44).abs() < 1e-9);
+        let m = parse_molecule("CCO.O").unwrap().1;
+        assert_eq!((m.count_atoms(), m.count_bonds()), (4, 2));
+        // a ring bond may cross a dot
+        let m = parse_molecule("C1.C1").unwrap().1;
+        assert_eq!(m.count_bonds(), 1);
+        // the wildcard gets no hydrogens and no weight
+        let m = parse_molecule("*C").unwrap().1;
+        assert!((m.weight() - 15.035).abs() < 1e-9);
+        assert!(parse_molecule("[*]CC").is_ok());
+        // every element in brackets, isotopes past 255, boron outside brackets
+        let m = parse_molecule("[238U]").unwrap().1;
+        assert_eq!(m.get_atom(NodeIndex::new(0)).unwrap().isotope, 238);
+        assert!(parse_molecule("[Og]").is_ok());
+        let m = parse_molecule("B(C)(C)C").unwrap().1;
+        assert_eq!(m.get_atom(NodeIndex::new(0)).unwrap().implicit_hs, 0);
+        // a dot needs an atom on both sides
+        for smiles in [
+            "CC.", ".CC", "C..O", ".", "[Na+].", "C(C.)C", "C.(C)", ".1C1",
+        ] {
+            assert!(parse_molecule(smiles).is_err(), "{smiles}");
+        }
+        assert!(parse_molecule("C(.C)C").is_ok());
+    }
+
+    #[test]
+    fn parse_rejects_misplaced_bond_symbols() {
+        // "CC=" used to parse as ethane: a bond symbol with no atom after it was dropped
+        for smiles in [
+            "CC=",
+            "C(C=)C",
+            "C=.C",
+            "C=(O)C",
+            "=C",
+            "C.=C",
+            "C==C",
+            "C=1CCCCC-1",
+        ] {
+            assert!(parse_molecule(smiles).is_err(), "{smiles}");
+        }
+        // bonds where they belong still parse, the same symbol at both ring ends too
+        for smiles in [
+            "C=C",
+            "C(=O)O",
+            "C=1CCCCC1",
+            "C1CCCCC=1",
+            "C=1CCCCC=1",
+            "C1.C=1",
+            "C=C.O",
+        ] {
+            assert!(parse_molecule(smiles).is_ok(), "{smiles}");
+        }
+    }
+
+    #[test]
+    fn parse_bond_at_ring_opening() {
+        // the "=" belongs to the ring bond, not to the next chain bond
+        let m = parse_molecule("C=1CCCCC1").unwrap().1;
+        assert_eq!(
+            m.get_bond_by_atoms(NodeIndex::new(0), NodeIndex::new(5))
+                .unwrap()
+                .order,
+            BondOrder::Double
+        );
+        assert_eq!(
+            m.get_bond_by_atoms(NodeIndex::new(0), NodeIndex::new(1))
+                .unwrap()
+                .order,
+            BondOrder::Single
+        );
     }
 
     #[test]
