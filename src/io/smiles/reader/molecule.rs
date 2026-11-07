@@ -144,8 +144,14 @@ fn parse_molecule_next(input: &mut &str) -> ModalResult<Molecule> {
 
     let mut prev_node = NodeIndex::end();
     let mut prev_bond = None;
+    let mut after_dot = false;
 
     for token in tokens {
+        // a '.' must stand between two atoms: "CC.", ".CC" and "C..O" are truncated or
+        // broken records, not molecules
+        if after_dot && !matches!(token, Token::Atom(..)) {
+            return Err(ErrMode::Cut(ContextError::new()));
+        }
         // a bond symbol must be followed by an atom or a ring digit: "CC=", "C(C=)C" and
         // "C=.C" would otherwise drop it and give a different molecule
         if prev_bond.is_some() && !matches!(token, Token::Atom(..) | Token::Ring(_)) {
@@ -195,21 +201,22 @@ fn parse_molecule_next(input: &mut &str) -> ModalResult<Molecule> {
                 }
                 prev_node = node;
                 prev_bond = None;
+                after_dot = false;
             }
-            // "=C" and "C.=C" have no atom before the bond
-            Token::Bond(_) if prev_node == NodeIndex::end() => {
+            // "=C", "C.=C" and ".C" have no atom before the bond or dot
+            Token::Bond(_) | Token::Dot if prev_node == NodeIndex::end() => {
                 return Err(ErrMode::Cut(ContextError::new()));
             }
             Token::Bond(order) => prev_bond = Some(order),
             // the next atom starts a new, unbonded component
             Token::Dot => {
                 prev_node = NodeIndex::end();
-                prev_bond = None;
+                after_dot = true;
             }
         }
     }
 
-    if !open_cycles.is_empty() || !stack.is_empty() || prev_bond.is_some() {
+    if !open_cycles.is_empty() || !stack.is_empty() || prev_bond.is_some() || after_dot {
         return Err(ErrMode::Cut(ContextError::new()));
     }
 
@@ -664,8 +671,13 @@ mod tests {
         assert!(parse_molecule("[Og]").is_ok());
         let m = parse_molecule("B(C)(C)C").unwrap().1;
         assert_eq!(m.get_atom(NodeIndex::new(0)).unwrap().implicit_hs, 0);
-        assert!(parse_molecule("CC.").is_ok());
-        assert!(parse_molecule(".1C1").is_err());
+        // a dot needs an atom on both sides
+        for smiles in [
+            "CC.", ".CC", "C..O", ".", "[Na+].", "C(C.)C", "C.(C)", ".1C1",
+        ] {
+            assert!(parse_molecule(smiles).is_err(), "{smiles}");
+        }
+        assert!(parse_molecule("C(.C)C").is_ok());
     }
 
     #[test]
