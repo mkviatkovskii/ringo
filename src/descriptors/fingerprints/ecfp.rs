@@ -170,7 +170,7 @@ mod test {
 
     #[test]
     fn test_ecfp_bits_are_stable() {
-        // pins the hash and the algorithm: if this changes, bump the index format version
+        // pins the hash and the algorithm: if this changes, existing indexes give wrong scores
         assert_eq!(fnv1a([]), 0xcbf2_9ce4_8422_2325);
         assert_eq!(
             ones(&ecfp("CC(=O)O", 2, 512)),

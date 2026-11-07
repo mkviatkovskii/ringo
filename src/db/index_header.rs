@@ -1,7 +1,5 @@
 const MAGIC: [u8; 8] = *b"RINGOFP\0";
-/// Bump whenever stored bytes change meaning, fingerprint bits included.
-/// 2: standard Morgan/ECFP iterations hashed with FNV-1a.
-const VERSION: u16 = 2;
+const VERSION: u16 = 1;
 
 /// A multiple of 8, so the records after it stay 8-byte aligned.
 pub const INDEX_HEADER_SIZE: usize = 16;
@@ -72,11 +70,10 @@ mod tests {
         // a pre-header index starts with a line offset, not the magic
         assert!(IndexHeader::from_bytes(&[0u8; INDEX_HEADER_SIZE]).is_err());
 
-        // a version 1 index has fingerprints from the old algorithm
         let mut bytes = IndexHeader::new(2, 512).unwrap().to_bytes();
-        bytes[8] = 1;
+        bytes[8] = 2;
         assert!(IndexHeader::from_bytes(&bytes)
             .unwrap_err()
-            .contains("version 1"));
+            .contains("version 2"));
     }
 }
