@@ -35,9 +35,7 @@ pub fn parse_atom(input: &str) -> IResult<&str, Atom> {
     Ok((
         input,
         Atom {
-            element: Element {
-                atomic_number: atomic_number,
-            },
+            element: Element { atomic_number },
             isotope: isotope.unwrap_or(0),
             charge: charge.unwrap_or(0),
             hs: hs.unwrap_or(0),

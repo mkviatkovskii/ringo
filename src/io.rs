@@ -1,1 +1,1 @@
-pub(crate) mod smiles;
+pub mod smiles;

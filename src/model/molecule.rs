@@ -10,6 +10,12 @@ pub struct Molecule {
     pub graph: StableGraph<Atom, Bond, Undirected>,
 }
 
+impl Default for Molecule {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Molecule {
     pub fn new() -> Molecule {
         Molecule {
@@ -18,39 +24,36 @@ impl Molecule {
     }
 
     pub fn add_atom(&mut self, atom: Atom) -> NodeIndex {
-        return self.graph.add_node(atom);
+        self.graph.add_node(atom)
     }
 
     pub fn add_bond(&mut self, atom1: NodeIndex, atom2: NodeIndex, bond: Bond) -> EdgeIndex {
-        return self.graph.add_edge(atom1, atom2, bond);
+        self.graph.add_edge(atom1, atom2, bond)
     }
 
     pub fn get_atom(&self, node: NodeIndex) -> Option<&Atom> {
-        return self.graph.node_weight(node);
+        self.graph.node_weight(node)
     }
 
     pub fn get_bond(&self, edge: EdgeIndex) -> Option<&Bond> {
-        return self.graph.edge_weight(edge);
+        self.graph.edge_weight(edge)
     }
 
     pub fn get_bond_by_atoms(&self, ni1: NodeIndex, ni2: NodeIndex) -> Option<&Bond> {
-        let e = self.graph.find_edge_undirected(ni1, ni2);
-        if e.is_none() {
-            return None;
-        }
-        return self.graph.edge_weight(e.unwrap().0);
+        let (edge, _) = self.graph.find_edge_undirected(ni1, ni2)?;
+        self.graph.edge_weight(edge)
     }
 
     pub fn has_bond(&self, ni1: NodeIndex, ni2: NodeIndex) -> bool {
-        return self.graph.find_edge_undirected(ni1, ni2).is_some();
+        self.graph.find_edge_undirected(ni1, ni2).is_some()
     }
 
     pub fn count_atoms(&self) -> usize {
-        return self.graph.node_count();
+        self.graph.node_count()
     }
 
     pub fn count_bonds(&self) -> usize {
-        return self.graph.edge_count();
+        self.graph.edge_count()
     }
 
     pub fn get_bonds_for_atom(&self, atom: NodeIndex) -> Vec<EdgeIndex> {
@@ -58,7 +61,7 @@ impl Molecule {
         for edge in self.graph.edges(atom) {
             bonds.push(EdgeIndex::new(edge.id().index()))
         }
-        return bonds;
+        bonds
     }
 
     pub fn get_neighbors_for_atom(&self, atom: NodeIndex) -> BTreeSet<NodeIndex> {
@@ -68,7 +71,7 @@ impl Molecule {
             atoms.insert(NodeIndex::new(edge.target().index()));
         }
         atoms.remove(atom.borrow());
-        return atoms;
+        atoms
     }
 }
 

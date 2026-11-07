@@ -1,7 +1,5 @@
 use crate::db::index_item::IndexItem;
 use crate::io::smiles::reader::molecule::parse_molecule;
-use crate::model::fingerprint::FINGERPRINT_SIZE;
-use bincode::encode_into_slice;
 use std::fs::File;
 use std::io::{BufRead, BufWriter, Write};
 
@@ -28,19 +26,60 @@ pub fn index_file(smiles_file: &str) {
         };
         offset += line.len() + LINE_ENDING_LENGTH;
 
-        let mut buf = vec![0u8; FINGERPRINT_SIZE / 8 + 8];
-
-        encode_into_slice(&index_item, buf.as_mut_slice(), bincode::config::standard()).unwrap();
-        writer.write(&buf).unwrap();
+        writer.write_all(&index_item.to_bytes()).unwrap();
     }
+    writer.flush().unwrap();
 }
 
 #[cfg(test)]
-mod test {
+pub(crate) mod test {
     use crate::db::index::index_file;
+    use crate::db::index_item::INDEX_ITEM_SIZE;
+    use std::path::{Path, PathBuf};
+
+    /// Per-test scratch directory under the system temp dir, removed on drop
+    /// (also when the test panics).
+    pub(crate) struct TestDir(PathBuf);
+
+    impl TestDir {
+        pub(crate) fn new(name: &str) -> TestDir {
+            let path = std::env::temp_dir().join(format!("ringo-{}-{}", name, std::process::id()));
+            let _ = std::fs::remove_dir_all(&path);
+            std::fs::create_dir_all(&path).unwrap();
+            TestDir(path)
+        }
+
+        pub(crate) fn path(&self) -> &Path {
+            &self.0
+        }
+    }
+
+    impl Drop for TestDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    /// Copies the sample `molecules.smi` into `dir` and returns the copy's path,
+    /// so tests never write index files into the repository.
+    pub(crate) fn copy_sample_molecules(dir: &Path) -> PathBuf {
+        let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("molecules.smi");
+        let target = dir.join("molecules.smi");
+        std::fs::copy(source, &target).unwrap();
+        target
+    }
 
     #[test]
     fn test_index() {
-        index_file("molecules.smi");
+        let dir = TestDir::new("test_index");
+        let smiles_file = copy_sample_molecules(dir.path());
+        index_file(smiles_file.to_str().unwrap());
+
+        let fp_file = dir.path().join("molecules.smi.fp");
+        // 2 molecules, one fixed-size record each
+        assert_eq!(
+            std::fs::metadata(fp_file).unwrap().len(),
+            2 * INDEX_ITEM_SIZE as u64
+        );
     }
 }

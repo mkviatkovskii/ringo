@@ -23,12 +23,12 @@ pub fn parse_charge(input: &str) -> IResult<&str, i8> {
         return Ok((input, charge * (sign_count + 1) as i8));
     }
     let digit_result = map_res(digit1, str::parse::<u8>)(input);
-    return if digit_result.is_ok() {
+    if digit_result.is_ok() {
         let (input, count) = digit_result?;
         Ok((input, charge * count as i8))
     } else {
         Ok((input, charge))
-    };
+    }
 }
 
 #[cfg(test)]

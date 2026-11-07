@@ -7,6 +7,7 @@ use nom::IResult;
 /// Parse a hydrogen count. Possible inputs are:
 /// * H - 1 hydrogen
 /// * Hn - n hydrogens
+///
 /// Returns the number of hydrogens
 pub fn parse_hydrogens(input: &str) -> IResult<&str, u8> {
     let single_hydrogen_parser = char('H');
@@ -14,7 +15,7 @@ pub fn parse_hydrogens(input: &str) -> IResult<&str, u8> {
     single_hydrogen_parser(input)?;
     let hydrogen_parser_result = hydrogen_parser(input);
     if hydrogen_parser_result.is_ok() {
-        return Ok(hydrogen_parser_result?);
+        return hydrogen_parser_result;
     }
     let single_hydrogen_parser_result = single_hydrogen_parser(input);
     if single_hydrogen_parser_result.is_ok() {
