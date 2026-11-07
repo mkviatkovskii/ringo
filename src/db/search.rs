@@ -1,8 +1,7 @@
 use crate::db::index_header::{IndexHeader, INDEX_HEADER_SIZE};
-use crate::db::index_item::{index_item_size, IndexItem};
+use crate::db::index_item::{index_item_size, split_record};
 use crate::db::with_path;
 use crate::io::smiles::reader::molecule::parse_molecule;
-use crate::math::similarity::tanimoto::tanimoto_bitset;
 use std::fs::File;
 use std::io::{self, BufRead, BufReader, Read, Seek};
 
@@ -54,7 +53,16 @@ pub fn similarity_search(
         .map_err(with_path(&fp_path))?;
     let header = IndexHeader::from_bytes(&header)
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, format!("{fp_path}: {e}")))?;
-    let query_fp = query.ecfp(header.radius, header.bits);
+    // in the stored byte order, so records are scored without decoding them
+    let query_words: Vec<u64> = query
+        .ecfp(header.radius, header.bits)
+        .to_bytes()
+        .as_chunks::<8>()
+        .0
+        .iter()
+        .map(|chunk| u64::from_le_bytes(*chunk))
+        .collect();
+    let query_ones = query_words.iter().map(|w| w.count_ones() as usize).sum();
     let item_size = index_item_size(header.bits);
 
     // stored offsets are only valid for the exact file that was indexed
@@ -80,27 +88,27 @@ pub fn similarity_search(
     }
 
     let mut hits = Vec::new();
-    let mut buf = vec![0u8; item_size];
+    // about 1 MiB of whole records per read call, scored in place; one record per call made
+    // a ChEMBL scan over twice as slow
+    let block_records = ((1 << 20) / item_size).max(1);
+    let mut buf = vec![0u8; block_records * item_size];
+    let mut left = header.count;
+    'scan: while left > 0 {
+        let n = usize::try_from(left).map_or(block_records, |left| left.min(block_records));
+        let block = &mut buf[..n * item_size];
+        buf_reader.read_exact(block).map_err(with_path(&fp_path))?;
+        left -= n as u64;
 
-    for _ in 0..header.count {
-        // read index item from file
-        buf_reader
-            .read_exact(&mut buf)
-            .map_err(with_path(&fp_path))?;
-
-        // decode index item
-        let index_item = IndexItem::from_bytes(&buf).map_err(with_path(&fp_path))?;
-        // a line the indexer could not parse; its similarity 0 would pass a range from 0
-        if index_item.fingerprint.0.is_clear() {
-            continue;
-        }
-
-        // calculate similarity
-        let similarity = tanimoto_bitset(&index_item.fingerprint.0, &query_fp.0);
-        if (min_similarity..=max_similarity).contains(&similarity) {
-            hits.push((similarity, index_item.position));
-            if mode == SearchMode::First && hits.len() >= limit {
-                break;
+        for record in block.chunks_exact(item_size) {
+            let (position, fingerprint) = split_record(record).map_err(with_path(&fp_path))?;
+            let Some(similarity) = tanimoto(fingerprint, &query_words, query_ones) else {
+                continue;
+            };
+            if (min_similarity..=max_similarity).contains(&similarity) {
+                hits.push((similarity, position));
+                if mode == SearchMode::First && hits.len() >= limit {
+                    break 'scan;
+                }
             }
         }
     }
@@ -125,14 +133,54 @@ pub fn similarity_search(
         .collect()
 }
 
+/// Tanimoto of stored fingerprint bytes against the query, in one pass and without
+/// allocating, the hot loop of a search. `None` for an empty record: a line the indexer
+/// could not parse, whose similarity 0 would pass a range from 0.
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "counts above 2^24 bits only blur digits far below what a score shows"
+)]
+fn tanimoto(record: &[u8], query_words: &[u64], query_ones: usize) -> Option<f32> {
+    let (mut ones, mut common) = (0, 0);
+    for (chunk, query) in record.as_chunks::<8>().0.iter().zip(query_words) {
+        let word = u64::from_le_bytes(*chunk);
+        ones += word.count_ones() as usize;
+        common += (word & query).count_ones() as usize;
+    }
+    (ones > 0).then(|| common as f32 / (ones + query_ones - common) as f32)
+}
+
 #[cfg(test)]
 mod test {
     use crate::db::index::index_file;
     use crate::db::index::test::{copy_sample_molecules, TestDir};
-    use crate::db::search::similarity_search;
     use crate::db::search::SearchMode::{Best, First};
+    use crate::db::search::{similarity_search, tanimoto};
     use crate::io::smiles::reader::molecule::parse_molecule;
     use crate::math::similarity::tanimoto::tanimoto_bitset;
+
+    #[test]
+    fn test_tanimoto_matches_bitset() {
+        let fp = |s| parse_molecule(s).unwrap().1.ecfp(2, 1024);
+        let smiles = ["C", "CCO", "c1ccccc1O", "CC(C)CC1=CC=C(C=C1)C(C)C(=O)O"];
+        for a in smiles {
+            for b in smiles {
+                let (a, b) = (fp(a), fp(b));
+                let words: Vec<u64> = b
+                    .to_bytes()
+                    .as_chunks::<8>()
+                    .0
+                    .iter()
+                    .map(|chunk| u64::from_le_bytes(*chunk))
+                    .collect();
+                assert_eq!(
+                    tanimoto(&a.to_bytes(), &words, b.0.count_ones(..)),
+                    Some(tanimoto_bitset(&a.0, &b.0))
+                );
+            }
+        }
+        assert_eq!(tanimoto(&[0; 128], &[u64::MAX; 16], 1024), None);
+    }
 
     #[test]
     fn test_similarity_search() {
@@ -218,6 +266,23 @@ mod test {
             let lines: Vec<&str> = results.iter().map(|r| r.line.trim_end()).collect();
             assert_eq!(lines, ["CCC"], "{mode:?}");
         }
+    }
+
+    #[test]
+    fn test_search_reads_across_blocks() {
+        let dir = TestDir::new("test_search_across_blocks");
+        let smiles_file = dir.path().join("m.smi");
+        std::fs::write(&smiles_file, "CCO\nCCN\nCCC\nCCCC\nCCCCO\n").unwrap();
+        let smiles_file = smiles_file.to_str().unwrap();
+        // 400 KB records, so a 1 MiB block holds 2 and the last block holds 1
+        index_file(smiles_file, 2, 3_200_000).unwrap();
+
+        let results = similarity_search(smiles_file, "CCC", 0.0, 1.0, 10, Best).unwrap();
+        assert_eq!(results.len(), 5);
+        assert_eq!(results[0].line.trim_end(), "CCC");
+        let results = similarity_search(smiles_file, "CCC", 0.0, 1.0, 3, First).unwrap();
+        let lines: Vec<&str> = results.iter().map(|r| r.line.trim_end()).collect();
+        assert_eq!(lines, ["CCO", "CCN", "CCC"]);
     }
 
     #[test]
