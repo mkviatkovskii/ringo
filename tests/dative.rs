@@ -121,5 +121,6 @@ fn malformed_dative_bonds_are_rejected() {
 
 #[test]
 fn dative_corpus_records_are_indexed_and_searchable() {
-    common::assert_self_search("dative", include_str!("data/dative.smi"));
+    let records = include_str!("data/dative.smi");
+    common::assert_search("dative", records, records.lines());
 }

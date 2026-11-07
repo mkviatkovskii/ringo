@@ -1,7 +1,3 @@
-pub fn assert_self_search(name: &str, records: &str) {
-    assert_search(name, records, records.lines());
-}
-
 #[expect(
     clippy::unwrap_used,
     reason = "integration helper requires valid fixtures and successful file operations"

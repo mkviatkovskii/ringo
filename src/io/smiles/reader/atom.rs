@@ -4,7 +4,8 @@ use crate::io::smiles::reader::hydrogens::parse_hydrogens;
 use crate::io::smiles::reader::isotope::parse_isotope;
 use crate::model::atom::Atom;
 use crate::model::element::Element;
-use winnow::combinator::{cut_err, opt};
+use winnow::ascii::digit1;
+use winnow::combinator::{cut_err, opt, preceded};
 use winnow::error::{ContextError, ErrMode};
 use winnow::prelude::*;
 
@@ -49,6 +50,7 @@ pub(crate) fn parse_atom(input: &mut &str) -> ModalResult<(Atom, bool, Option<Ch
     let mut hs: Option<u8> = None;
     let bracket = opt('[').parse_next(input)?.is_some();
     let mut chirality = None;
+    let mut atom_class = 0;
     if bracket {
         isotope = opt(parse_isotope).parse_next(input)?;
     }
@@ -62,6 +64,9 @@ pub(crate) fn parse_atom(input: &mut &str) -> ModalResult<(Atom, bool, Option<Ch
         chirality = opt(parse_chirality).parse_next(input)?;
         hs = opt(parse_hydrogens).parse_next(input)?;
         charge = opt(parse_charge).parse_next(input)?;
+        atom_class = opt(preceded(':', cut_err(digit1.try_map(str::parse::<u32>))))
+            .parse_next(input)?
+            .unwrap_or(0);
         // unclosed bracket atom is a hard error, not a reason to stop parsing
         cut_err(']').parse_next(input)?;
     }
@@ -70,6 +75,7 @@ pub(crate) fn parse_atom(input: &mut &str) -> ModalResult<(Atom, bool, Option<Ch
         Atom {
             element: Element { atomic_number },
             isotope: isotope.unwrap_or(0),
+            atom_class,
             charge: charge.unwrap_or(0),
             hs: hs.unwrap_or(0),
             implicit_hs: 0,

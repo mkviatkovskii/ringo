@@ -9,6 +9,11 @@ exclude dative bonds; fingerprint degree and neighbourhoods include them, with
 different codes for the donor and acceptor ends. Reversing SMILES traversal
 preserves the fingerprint. Existing covalent fingerprints are unchanged.
 
+Bracket atoms accept a trailing numeric class/map label, such as `[CH3:12]`,
+`[NH4+:005]`, or `[1*:0]`. `Atom::atom_class` stores the label as a `u32`;
+an absent label is zero. Labels do not affect fingerprints or stereochemistry.
+Malformed labels and values above `u32::MAX` are parsing errors.
+
 The SMILES reader preserves tetrahedral (`@`, `@@`, `@TH1`, `@TH2`),
 trigonal-bipyramidal (`@TB1`–`@TB20`), octahedral (`@OH1`–`@OH30`),
 and ordinary double-bond (`/`, `\`) configurations. Use
