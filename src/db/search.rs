@@ -28,7 +28,7 @@ pub fn similarity_search(
     let index_count = file_len / INDEX_ITEM_SIZE as u64;
     let mut buf_reader = BufReader::new(fif);
 
-    let mut results = Vec::new();
+    let mut hits = Vec::new();
     let mut buf = [0u8; INDEX_ITEM_SIZE];
 
     for _ in 0..index_count {
@@ -42,7 +42,17 @@ pub fn similarity_search(
         let similarity = tanimoto_bitset(&index_item.fingerprint.0, &query_fp.0);
         // print similarity if it is greater than min_similarity
         if similarity >= min_similarity {
-            let position = index_item.position;
+            hits.push((similarity, index_item.position));
+        }
+    }
+
+    // best first; the sort is stable, so ties keep file order
+    // shortcut: keeps every hit in memory, use a bounded BinaryHeap if low thresholds on huge files run out of memory
+    hits.sort_by(|a, b| b.0.total_cmp(&a.0));
+    hits.truncate(limit);
+
+    hits.into_iter()
+        .map(|(similarity, position)| {
             reader
                 .seek(std::io::SeekFrom::Start(position as u64))
                 .unwrap();
@@ -50,15 +60,9 @@ pub fn similarity_search(
             let mut line = String::new();
             reader.read_line(&mut line).unwrap();
             // println!("{i} {similarity} {position} {line}");
-            results.push(SearchResult { line, similarity });
-
-            if results.len() >= limit {
-                break;
-            }
-        }
-    }
-
-    results
+            SearchResult { line, similarity }
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -80,6 +84,27 @@ mod test {
         assert_eq!(results[0].similarity, 1.0);
         let results = similarity_search(smiles_file, "CC(C)CC1=CC=C(C=C1)C(C)C(=O)O", 0.5, 100);
         assert_eq!(results.len(), 2);
+    }
+
+    #[test]
+    fn test_search_returns_best_matches_first() {
+        let dir = TestDir::new("test_search_best_matches");
+        let smiles_file = dir.path().join("m.smi");
+        // the exact match is last, so a search that stops early never sees it
+        std::fs::write(&smiles_file, "CCO\nCCN\nCCC\n").unwrap();
+        let smiles_file = smiles_file.to_str().unwrap();
+        index_file(smiles_file);
+
+        let results = similarity_search(smiles_file, "CCC", 0.0, 1);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].line.trim_end(), "CCC");
+        assert_eq!(results[0].similarity, 1.0);
+
+        let results = similarity_search(smiles_file, "CCC", 0.0, 10);
+        assert_eq!(results.len(), 3);
+        assert!(results
+            .windows(2)
+            .all(|w| w[0].similarity >= w[1].similarity));
     }
 
     #[test]
