@@ -38,6 +38,7 @@ fn corpus_fixtures_preserve_every_marker() {
 
 #[test]
 fn extended_classes_keep_permutation_and_missing_site() {
+    assert_eq!(parity("N[S@](Cl)=O"), parity("[S@@](N)(Cl)=O"));
     let molecule = parse_molecule("O[Mn@OH28](Cl)(C)(N)F").unwrap().1;
     let s = &molecule.atom_stereo()[0];
     assert_eq!(s.configuration, Configuration::Octahedral(28));
@@ -49,7 +50,7 @@ fn extended_classes_keep_permutation_and_missing_site() {
         Configuration::TrigonalBipyramidal(5)
     );
     let molecule = parse_molecule("O=[S@@](O)C").unwrap().1;
-    assert_eq!(molecule.atom_stereo()[0].ligands[3], Ligand::LonePair);
+    assert_eq!(molecule.atom_stereo()[0].ligands[1], Ligand::LonePair);
     assert_eq!(parity("[C@H](F)(Cl)Br"), parity("[C@]([H])(F)(Cl)Br"));
     let m = parse_molecule("[2H][C@](F)(Cl)Br").unwrap().1;
     assert_eq!(
@@ -170,6 +171,8 @@ fn hydrogens_and_ring_slots_keep_their_positions() {
 
 #[test]
 fn directional_meaning_and_errors() {
+    let m = parse_molecule("O=C(/C=C/c1ccccc1)/C=C/c1ccccc1").unwrap().1; // CHEMBL17201
+    assert_eq!(m.double_bond_stereo().len(), 2);
     let m = parse_molecule("CC(=O)/N=c1/sc(S(N)(=O)=O)nn1C").unwrap().1; // CHEBI:6822
     assert_eq!(m.double_bond_stereo().len(), 1);
     let a = parse_molecule("F/C=C1CCCCC/1").unwrap().1;
@@ -245,13 +248,11 @@ fn corpus_coverage() {
     use std::io::BufRead;
     let root = std::env::var("RINGO_SMILES_CORPUS").unwrap();
     for name in ["chebi_20261105.smi", "chembl_37.smi"] {
+        let corpus_path = std::path::Path::new(&root).join(name);
+        let before = std::fs::metadata(&corpus_path).unwrap();
         let mut counts = [0usize; 4];
         let mut examples = Vec::new();
-        for line in std::io::BufReader::new(
-            std::fs::File::open(std::path::Path::new(&root).join(name)).unwrap(),
-        )
-        .lines()
-        {
+        for line in std::io::BufReader::new(std::fs::File::open(&corpus_path).unwrap()).lines() {
             let line = line.unwrap();
             let smiles = line.split_whitespace().next().unwrap_or("");
             let stereo = smiles.contains(['@', '/', '\\']);
@@ -261,6 +262,12 @@ fn corpus_coverage() {
                 examples.push(line);
             }
         }
+        let after = std::fs::metadata(&corpus_path).unwrap();
+        assert_eq!(
+            (before.len(), before.modified().unwrap()),
+            (after.len(), after.modified().unwrap()),
+            "corpus changed during scan"
+        );
         println!("{name}: [plain rejected, plain accepted, stereo rejected, stereo accepted] = {counts:?}; examples={examples:?}");
     }
 }

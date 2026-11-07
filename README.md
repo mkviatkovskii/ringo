@@ -8,7 +8,7 @@ and ordinary double-bond (`/`, `\`) configurations. Use
 Atom configurations refer to the recorded ligand order, not CIP R/S labels.
 For TB/OH, permutation numbers retain their SMILES meaning; missing coordination
 sites occupy the implicit-hydrogen position, following RDKit's SMILES convention.
-Three-neighbour N/P/S/As/Se tetrahedral records use a final virtual lone-pair site.
+Three-neighbour N/P/S/As/Se tetrahedral records use a virtual lone-pair site in the implicit-hydrogen position (Open Babel convention).
 Absence of a record means unspecified stereochemistry. The reader does not
 validate chemical plausibility or perceive additional stereocentres.
 

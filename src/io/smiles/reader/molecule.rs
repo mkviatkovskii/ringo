@@ -354,7 +354,7 @@ fn finish_molecule(
             ligands.insert(usize::from(has_previous), Ligand::Vacancy);
         }
         if ligands.len() == 3 && matches!(atom.element.atomic_number, 7 | 15 | 16 | 33 | 34) {
-            ligands.push(Ligand::LonePair);
+            ligands.insert(usize::from(has_previous), Ligand::LonePair);
         }
         let configuration = match (chirality, ligands.len()) {
             (Chirality::Default(n) | Chirality::TH(n), 4) => Configuration::Tetrahedral(n),
@@ -405,13 +405,13 @@ fn resolve_directions(
                     sides[side].push((a, !up, i));
                 }
             }
-            if sides[side].len() > 2
-                || (sides[side].len() == 2 && sides[side][0].1 == sides[side][1].1)
-            {
-                return Err(error());
-            }
         }
         if let (Some(a), Some(b)) = (sides[0].first(), sides[1].first()) {
+            for side in &sides {
+                if side.len() > 2 || (side.len() == 2 && side[0].1 == side[1].1) {
+                    return Err(error());
+                }
+            }
             molecule.bond_stereo.push(DoubleBondStereo {
                 bond: edge.id(),
                 ends,
