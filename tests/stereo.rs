@@ -201,7 +201,13 @@ fn indexes_newly_supported_stereo_without_changing_fingerprints() {
     let path = std::env::temp_dir().join(format!("ringo-stereo-{}.smi", std::process::id()));
     std::fs::write(&path, "N[C@H](C)C(=O)O alanine\nF/C=C/F alkene\n").unwrap();
     assert_eq!(
-        ringo::db::index::index_file(path.to_str().unwrap(), 2, 512).unwrap(),
+        ringo::db::index::index_file(
+            path.to_str().unwrap(),
+            2,
+            512,
+            ringo::db::index::DEFAULT_BATCH_LINES
+        )
+        .unwrap(),
         0
     );
     for query in ["N[C@@H](C)C(=O)O", "F/C=C\\F"] {
