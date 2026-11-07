@@ -43,8 +43,8 @@ fn implicit_hydrogens(
     node: NodeIndex,
     atomic_number: u8,
     aromatic: bool,
-) -> u8 {
-    let mut valences: &[usize] = match atomic_number {
+) -> ModalResult<u8> {
+    let mut valences: &[u8] = match atomic_number {
         5 => &[3],
         6 => &[4],
         7 | 15 => &[3, 5],
@@ -53,11 +53,10 @@ fn implicit_hydrogens(
         1 | 9 | 17 | 35 | 53 => &[1],
         _ => &[],
     };
-    // usize, so even an atom with hundreds of bonds cannot overflow
-    let mut bonds: usize = 0;
+    let mut bonds: u8 = 0;
     let mut aromatic = aromatic;
     for edge in molecule.graph.edges(node) {
-        bonds += match edge.weight().order {
+        let order = match edge.weight().order {
             BondOrder::Single => 1,
             BondOrder::Double => 2,
             BondOrder::Triple => 3,
@@ -66,17 +65,22 @@ fn implicit_hydrogens(
                 1
             }
         };
+        bonds = bonds
+            .checked_add(order)
+            .ok_or_else(|| ErrMode::Cut(ContextError::new()))?;
     }
     // an aromatic atom also spends one electron on the ring, and keeps its lowest
     // valence: the s in thiophene has no hydrogen
     if aromatic {
-        bonds += 1;
+        bonds = bonds
+            .checked_add(1)
+            .ok_or_else(|| ErrMode::Cut(ContextError::new()))?;
         valences = &valences[..valences.len().min(1)];
     }
-    valences
+    Ok(valences
         .iter()
         .find(|&&valence| valence >= bonds)
-        .map_or(0, |valence| u8::try_from(valence - bonds).unwrap_or(0))
+        .map_or(0, |valence| valence - bonds))
 }
 
 /// Adds the bonds, giving each one with no symbol its order: aromatic between two
@@ -230,7 +234,7 @@ fn parse_molecule_next(input: &mut &str) -> ModalResult<Molecule> {
     add_bonds(&mut molecule, pending_bonds);
 
     for (node, atomic_number, aromatic) in organic_nodes {
-        let hs = implicit_hydrogens(&molecule, node, atomic_number, aromatic);
+        let hs = implicit_hydrogens(&molecule, node, atomic_number, aromatic)?;
         if let Some(atom) = molecule.graph.node_weight_mut(node) {
             atom.implicit_hs = hs;
         }
@@ -699,13 +703,28 @@ mod tests {
     }
 
     #[test]
-    fn parse_atom_with_hundreds_of_bonds() {
-        // the bond count used to overflow a u8 and panic
+    fn parse_rejects_bond_order_overflow() {
+        // Only the arithmetic limit is enforced, not chemical valence.
+        for (atom, branch, limit) in [
+            ("C", "(C)", 255),
+            ("C", "(=C)", 127),
+            ("C", "(#C)", 85),
+            ("c", "(C)", 254),
+        ] {
+            let smiles = format!("{atom}{}", branch.repeat(limit));
+            assert!(
+                parse_molecule(&smiles).is_ok(),
+                "{atom} with {limit} {branch}"
+            );
+            let smiles = format!("{smiles}{branch}");
+            assert!(
+                parse_molecule(&smiles).is_err(),
+                "{atom} with {} {branch}",
+                limit + 1
+            );
+        }
         let smiles = format!("C{}", "(C)".repeat(300));
-        let m = parse_molecule(&smiles).unwrap().1;
-        assert_eq!(m.get_atom(NodeIndex::new(0)).unwrap().implicit_hs, 0);
-        // indexing computes this for every record
-        assert!(m.ecfp(2, 512).0.count_ones(..) > 0);
+        assert!(parse_molecule(&smiles).is_err());
     }
 
     #[test]

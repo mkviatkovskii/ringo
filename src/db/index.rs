@@ -134,16 +134,21 @@ pub(crate) mod test {
     fn test_index_skips_unparseable_lines() {
         let dir = TestDir::new("test_index_skips_unparseable_lines");
         let smiles_file = dir.path().join("m.smi");
-        // the chiral line is not supported yet and must not abort indexing
-        std::fs::write(&smiles_file, "CCO\nN[C@H](C)C(=O)O\nCCC\n").unwrap();
+        // Unsupported syntax and bond-order overflow must not abort indexing.
+        let overflow = format!("C{}", "(C)".repeat(300));
+        std::fs::write(
+            &smiles_file,
+            format!("CCO\nN[C@H](C)C(=O)O\n{overflow}\nCCC\n"),
+        )
+        .unwrap();
 
         let skipped = index_file(smiles_file.to_str().unwrap(), 2, 512).unwrap();
 
-        assert_eq!(skipped, 1);
+        assert_eq!(skipped, 2);
         let fp_file = dir.path().join("m.smi.fp");
         assert_eq!(
             std::fs::metadata(fp_file).unwrap().len(),
-            (INDEX_HEADER_SIZE + 3 * index_item_size(512)) as u64
+            (INDEX_HEADER_SIZE + 4 * index_item_size(512)) as u64
         );
         assert!(!dir.path().join("m.smi.fp.tmp").exists());
     }
