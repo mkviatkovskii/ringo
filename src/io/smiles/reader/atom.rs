@@ -4,53 +4,40 @@ use crate::io::smiles::reader::hydrogens::parse_hydrogens;
 use crate::io::smiles::reader::isotope::parse_isotope;
 use crate::model::atom::Atom;
 use crate::model::element::Element;
-use nom::combinator::opt;
-use nom::IResult;
+use winnow::combinator::{cut_err, opt};
+use winnow::prelude::*;
 
-pub fn parse_atom(input: &str) -> IResult<&str, Atom> {
+pub fn parse_atom(input: &mut &str) -> ModalResult<Atom> {
     let mut isotope: Option<u8> = None;
     let mut charge: Option<i8> = None;
     let mut hs: Option<u8> = None;
-    let atomic_number: u8;
-    let (mut input, sqro_found) = opt(nom::character::complete::char('['))(input)?;
-    if sqro_found.is_some() {
-        (input, isotope) = opt(parse_isotope)(input).unwrap_or((input, None));
+    let bracket = opt('[').parse_next(input)?.is_some();
+    if bracket {
+        isotope = opt(parse_isotope).parse_next(input)?;
     }
-    (input, atomic_number) = parse_element(input)?;
-    if sqro_found.is_some() {
-        (input, hs) = opt(parse_hydrogens)(input).unwrap_or((input, None));
-        (input, charge) = opt(parse_charge)(input).unwrap_or((input, None));
-        let sqrc_found: Option<char>;
-        (input, sqrc_found) = opt(nom::character::complete::char(']'))(input)?;
-        if (sqro_found.is_some() && sqrc_found.is_none())
-            || (sqro_found.is_none() && sqrc_found.is_some())
-        {
-            return Err(nom::Err::Failure(nom::error::Error::new(
-                input,
-                nom::error::ErrorKind::Verify,
-            )));
-        }
+    let atomic_number = parse_element(input)?;
+    if bracket {
+        hs = opt(parse_hydrogens).parse_next(input)?;
+        charge = opt(parse_charge).parse_next(input)?;
+        // unclosed bracket atom is a hard error, not a reason to stop parsing
+        cut_err(']').parse_next(input)?;
     }
 
-    Ok((
-        input,
-        Atom {
-            element: Element {
-                atomic_number: atomic_number,
-            },
-            isotope: isotope.unwrap_or(0),
-            charge: charge.unwrap_or(0),
-            hs: hs.unwrap_or(0),
-        },
-    ))
+    Ok(Atom {
+        element: Element { atomic_number },
+        isotope: isotope.unwrap_or(0),
+        charge: charge.unwrap_or(0),
+        hs: hs.unwrap_or(0),
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use crate::io::smiles::reader::atom::parse_atom;
+    use winnow::Parser;
 
     fn do_test_parse_atom(input: &str, atomic_number: u8, charge: i8, hs: u8, isotope: u8) {
-        let (remaining_input, atom) = parse_atom(input).unwrap();
+        let (remaining_input, atom) = parse_atom.parse_peek(input).unwrap();
         assert_eq!(atom.element.atomic_number, atomic_number);
         assert_eq!(atom.isotope, isotope);
         assert_eq!(atom.charge, charge);
@@ -95,6 +82,6 @@ mod tests {
 
     #[test]
     fn parse_atom_13_c_h3_minus_incorrect_closing() {
-        assert!(parse_atom("[13CH3-C").is_err())
+        assert!(parse_atom.parse_peek("[13CH3-C").is_err())
     }
 }

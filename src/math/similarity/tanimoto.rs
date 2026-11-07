@@ -3,8 +3,7 @@ use fixedbitset::FixedBitSet;
 pub fn tanimoto_bitset(a: &FixedBitSet, b: &FixedBitSet) -> f32 {
     let mut and_ = a.clone();
     and_.intersect_with(b);
-    return and_.count_ones(..) as f32
-        / (a.count_ones(..) + b.count_ones(..) - and_.count_ones(..)) as f32;
+    and_.count_ones(..) as f32 / (a.count_ones(..) + b.count_ones(..) - and_.count_ones(..)) as f32
 }
 
 #[cfg(test)]

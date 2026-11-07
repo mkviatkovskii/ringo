@@ -1,84 +1,65 @@
-use nom::{
-    branch::alt,
-    character::complete::{char, digit1},
-    combinator::map_res,
-    multi::many1_count,
-    IResult,
-};
+use winnow::ascii::digit1;
+use winnow::combinator::{opt, repeat};
+use winnow::prelude::*;
+use winnow::token::one_of;
 
 /// Parses a charge, which could be:
 /// * single `+` or `-` sign => return 1 or -1
 /// * multiple `+` or `-` signs => return n or -n
 /// * `+` or `-` sign followed by a number => return n or -n
-pub fn parse_charge(input: &str) -> IResult<&str, i8> {
-    let (input, sign) = alt((char('+'), char('-')))(input)?;
-    let charge = match sign {
-        '+' => 1,
-        '-' => -1,
-        _ => unreachable!("charge is either + or -"),
-    };
-    let sign_result = many1_count(char(sign))(input);
-    if sign_result.is_ok() {
-        let (input, sign_count) = sign_result?;
-        return Ok((input, charge * (sign_count + 1) as i8));
+pub fn parse_charge(input: &mut &str) -> ModalResult<i8> {
+    let sign = one_of(['+', '-']).parse_next(input)?;
+    let charge: i8 = if sign == '+' { 1 } else { -1 };
+    let repeated: usize = repeat(0.., sign).parse_next(input)?;
+    if repeated > 0 {
+        return Ok(charge * (repeated + 1) as i8);
     }
-    let digit_result = map_res(digit1, str::parse::<u8>)(input);
-    return if digit_result.is_ok() {
-        let (input, count) = digit_result?;
-        Ok((input, charge * count as i8))
-    } else {
-        Ok((input, charge))
-    };
+    let count = opt(digit1.try_map(str::parse::<u8>)).parse_next(input)?;
+    Ok(charge * count.map_or(1, |count| count as i8))
 }
 
 #[cfg(test)]
 mod tests {
     use crate::io::smiles::reader::charge::parse_charge;
-    use nom::error::{Error, ErrorKind};
+    use winnow::Parser;
 
     #[test]
     fn parse_charge_empty() {
-        assert_eq!(
-            parse_charge(""),
-            Err(nom::Err::Error(Error::new("", ErrorKind::Char)))
-        );
+        assert!(parse_charge.parse_peek("").is_err());
     }
 
     #[test]
     fn parse_charge_a() {
-        assert_eq!(
-            parse_charge("a"),
-            Err(nom::Err::Error(Error::new("a", ErrorKind::Char)))
-        );
+        assert!(parse_charge.parse_peek("a").is_err());
     }
 
     #[test]
     fn parse_charge_plus() {
-        assert_eq!(parse_charge("+").unwrap().1, 1);
+        assert_eq!(parse_charge.parse_peek("+").unwrap().1, 1);
     }
 
     #[test]
     fn parse_charge_minus() {
-        assert_eq!(parse_charge("-").unwrap().1, -1);
+        assert_eq!(parse_charge.parse_peek("-").unwrap().1, -1);
     }
 
     #[test]
     fn parse_charge_plus_2() {
-        assert_eq!(parse_charge("+2").unwrap().1, 2);
+        assert_eq!(parse_charge.parse_peek("+2").unwrap().1, 2);
     }
 
     #[test]
     fn parse_charge_minus_2() {
-        assert_eq!(parse_charge("-2").unwrap().1, -2);
+        assert_eq!(parse_charge.parse_peek("-2").unwrap().1, -2);
     }
 
     #[test]
     fn parse_charge_plus_plus() {
-        assert_eq!(parse_charge("++").unwrap().1, 2);
+        assert_eq!(parse_charge.parse_peek("++").unwrap().1, 2);
     }
 
     #[test]
     fn parse_charge_minus_minus() {
-        assert_eq!(parse_charge("--").unwrap().1, -2);
+        assert_eq!(parse_charge.parse_peek("--").unwrap().1, -2);
     }
 }
