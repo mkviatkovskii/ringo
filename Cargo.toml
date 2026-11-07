@@ -26,3 +26,22 @@ path = "src/bin/ringo_index.rs"
 [[bin]]
 name = "ringo-search"
 path = "src/bin/ringo_search.rs"
+
+[lints.rust]
+unsafe_code = "forbid"
+rust_2018_idioms = { level = "warn", priority = -1 }
+
+[lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+# docs-only pedantic lints; noise for a crate this size
+must_use_candidate = "allow"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+# a panic outside tests should be a deliberate panic! or assert! on an invariant
+unwrap_used = "deny"
+expect_used = "deny"
+dbg_macro = "warn"
+todo = "warn"
+unimplemented = "warn"
+# an allowed lint must say why
+allow_attributes_without_reason = "warn"

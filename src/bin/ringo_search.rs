@@ -1,5 +1,3 @@
-extern crate ringo;
-
 use ringo::db::search::{similarity_search, SearchMode};
 use std::process::ExitCode;
 
@@ -66,7 +64,7 @@ mod tests {
     use ringo::db::search::SearchMode;
 
     fn args(list: &[&str]) -> Vec<String> {
-        list.iter().map(|s| s.to_string()).collect()
+        list.iter().map(std::string::ToString::to_string).collect()
     }
 
     #[test]

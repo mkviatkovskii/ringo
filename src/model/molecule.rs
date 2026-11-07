@@ -19,7 +19,7 @@ impl Default for Molecule {
 impl Molecule {
     pub fn new() -> Molecule {
         Molecule {
-            graph: Default::default(),
+            graph: StableGraph::default(),
         }
     }
 
@@ -59,7 +59,7 @@ impl Molecule {
     pub fn get_bonds_for_atom(&self, atom: NodeIndex) -> Vec<EdgeIndex> {
         let mut bonds: Vec<EdgeIndex> = Vec::new();
         for edge in self.graph.edges(atom) {
-            bonds.push(EdgeIndex::new(edge.id().index()))
+            bonds.push(EdgeIndex::new(edge.id().index()));
         }
         bonds
     }

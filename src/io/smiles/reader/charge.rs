@@ -1,5 +1,6 @@
 use winnow::ascii::digit1;
 use winnow::combinator::{opt, repeat};
+use winnow::error::{ContextError, ErrMode};
 use winnow::prelude::*;
 use winnow::token::one_of;
 
@@ -12,10 +13,12 @@ pub fn parse_charge(input: &mut &str) -> ModalResult<i8> {
     let charge: i8 = if sign == '+' { 1 } else { -1 };
     let repeated: usize = repeat(0.., sign).parse_next(input)?;
     if repeated > 0 {
-        return Ok(charge * (repeated + 1) as i8);
+        // a charge that does not fit in i8 is an error, not a wrapped value
+        let count = i8::try_from(repeated + 1).map_err(|_| ErrMode::Cut(ContextError::new()))?;
+        return Ok(charge * count);
     }
-    let count = opt(digit1.try_map(str::parse::<u8>)).parse_next(input)?;
-    Ok(charge * count.map_or(1, |count| count as i8))
+    let count = opt(digit1.try_map(str::parse::<i8>)).parse_next(input)?;
+    Ok(charge * count.unwrap_or(1))
 }
 
 #[cfg(test)]
@@ -56,6 +59,15 @@ mod tests {
     #[test]
     fn parse_charge_plus_plus() {
         assert_eq!(parse_charge.parse_peek("++").unwrap().1, 2);
+    }
+
+    #[test]
+    fn parse_charge_out_of_range() {
+        // used to wrap around: "+200" gave -56
+        let (rest, _) = parse_charge.parse_peek("+200").unwrap();
+        assert_eq!(rest, "200");
+        assert!(parse_charge.parse_peek(&"+".repeat(200)).is_err());
+        assert_eq!(parse_charge.parse_peek("-127").unwrap().1, -127);
     }
 
     #[test]
