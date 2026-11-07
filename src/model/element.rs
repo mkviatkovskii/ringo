@@ -6,8 +6,8 @@ pub struct Element {
 impl Element {
     pub fn atomic_weight(&self) -> f64 {
         match self.atomic_number {
-            1 => 1.007825,
-            2 => 4.002603,
+            1 => 1.008,
+            2 => 4.002602,
             3 => 6.938,
             4 => 9.0121831,
             5 => 10.806,
@@ -101,6 +101,6 @@ mod test {
     #[test]
     fn test_element() {
         let element = Element { atomic_number: 1 };
-        assert_eq!(element.atomic_weight(), 1.007825);
+        assert_eq!(element.atomic_weight(), 1.008);
     }
 }

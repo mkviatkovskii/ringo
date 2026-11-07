@@ -28,6 +28,7 @@ pub fn parse_atom(input: &mut &str) -> ModalResult<Atom> {
         isotope: isotope.unwrap_or(0),
         charge: charge.unwrap_or(0),
         hs: hs.unwrap_or(0),
+        implicit_hs: 0,
     })
 }
 
