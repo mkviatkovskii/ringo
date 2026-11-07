@@ -1,6 +1,6 @@
 const MAGIC: [u8; 8] = *b"RINGOFP\0";
-// 3: fingerprints count implicit hydrogens and read aromatic SMILES
-const VERSION: u16 = 3;
+// Bump once per release when index compatibility changes.
+const VERSION: u16 = 1;
 
 /// A multiple of 8, so the records after it stay 8-byte aligned.
 pub const INDEX_HEADER_SIZE: usize = 32;
@@ -87,6 +87,7 @@ mod tests {
             count: 12345,
             ..IndexHeader::new(3, 1024).unwrap()
         };
+        assert_eq!(&header.to_bytes()[8..10], &1u16.to_le_bytes());
         assert_eq!(IndexHeader::from_bytes(&header.to_bytes()), Ok(header));
     }
 
@@ -99,9 +100,9 @@ mod tests {
         assert!(IndexHeader::from_bytes(&[0u8; INDEX_HEADER_SIZE]).is_err());
 
         let mut bytes = IndexHeader::new(2, 512).unwrap().to_bytes();
-        bytes[8] = 1;
+        bytes[8..10].copy_from_slice(&2u16.to_le_bytes());
         assert!(IndexHeader::from_bytes(&bytes)
             .unwrap_err()
-            .contains("version 1"));
+            .contains("version 2"));
     }
 }

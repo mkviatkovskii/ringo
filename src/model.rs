@@ -1,3 +1,4 @@
+pub mod aromaticity;
 pub mod atom;
 pub mod bond;
 pub mod element;

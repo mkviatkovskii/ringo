@@ -146,7 +146,7 @@ mod test {
         let ibuprofen = ecfp("CC(C)CC1=CC=C(C=C1)C(C)C(=O)O", 2, 512);
         let naproxen = ecfp("CC(C1=CC2=C(C=C1)C=C(C=C2)OC)C(=O)O", 2, 512);
         let sim = tanimoto_bitset(&ibuprofen.0, &naproxen.0);
-        assert!(0.42 < sim && sim < 0.43, "{sim}");
+        assert!(0.47 < sim && sim < 0.48, "{sim}");
     }
 
     #[test]
