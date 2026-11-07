@@ -6,6 +6,8 @@ pub struct Atom {
     pub isotope: u8,
     pub charge: i8,
     pub hs: u8,
+    // hydrogens implied by valence for atoms written without brackets
+    pub implicit_hs: u8,
 }
 
 #[cfg(test)]
@@ -19,6 +21,7 @@ mod tests {
             isotope: 12,
             charge: 0,
             hs: 0,
+            implicit_hs: 0,
         };
         assert_eq!(atom.element, Element { atomic_number: 6 });
         assert_eq!(atom.isotope, 12);

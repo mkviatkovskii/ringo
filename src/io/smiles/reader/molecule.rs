@@ -10,10 +10,47 @@ use winnow::combinator::{alt, repeat};
 use winnow::error::{ContextError, ErrMode};
 use winnow::prelude::*;
 
-type Token = (Option<Atom>, Option<Bond>, Option<u8>, Option<bool>);
+// the atom carries whether it was written in brackets
+type Token = (Option<(Atom, bool)>, Option<Bond>, Option<u8>, Option<bool>);
 
 fn parse_cycle_digit(input: &mut &str) -> ModalResult<u8> {
     digit1.try_map(str::parse::<u8>).parse_next(input)
+}
+
+/// Hydrogens an atom outside brackets gets: the lowest normal valence that
+/// fits its bonds, minus the bonds (OpenSMILES organic subset rules).
+fn implicit_hydrogens(molecule: &Molecule, node: NodeIndex, atomic_number: u8) -> u8 {
+    let valences: &[u8] = match atomic_number {
+        5 => &[3],
+        6 => &[4],
+        7 => &[3, 5],
+        8 => &[2],
+        15 => &[3, 5],
+        16 => &[2, 4, 6],
+        1 | 9 | 17 | 35 | 53 => &[1],
+        _ => &[],
+    };
+    let mut bonds: u8 = 0;
+    let mut aromatic = false;
+    for edge in molecule.graph.edges(node) {
+        bonds += match edge.weight().order {
+            BondOrder::Single => 1,
+            BondOrder::Double => 2,
+            BondOrder::Triple => 3,
+            BondOrder::Aromatic => {
+                aromatic = true;
+                1
+            }
+        };
+    }
+    // an aromatic atom also spends one electron on the ring
+    if aromatic {
+        bonds += 1;
+    }
+    valences
+        .iter()
+        .find(|&&valence| valence >= bonds)
+        .map_or(0, |valence| valence - bonds)
 }
 
 /// Parses a molecule from the start of `input`; returns the unparsed rest and the molecule.
@@ -26,11 +63,14 @@ fn parse_molecule_next(input: &mut &str) -> ModalResult<Molecule> {
     let mut open_cycles: HashMap<u8, NodeIndex> = HashMap::new();
     let mut stack: Vec<(NodeIndex, BondOrder)> = Vec::new();
     let mut pending_bonds: Vec<(NodeIndex, NodeIndex, Bond)> = Vec::new();
+    let mut organic_nodes: Vec<(NodeIndex, u8)> = Vec::new();
 
     let atoms_and_bonds: Vec<Token> = repeat(
         0..,
         alt((
-            parse_atom.map(|atom| (Some(atom), None, None, None)),
+            parse_atom
+                .with_taken()
+                .map(|(atom, taken)| (Some((atom, taken.starts_with('['))), None, None, None)),
             parse_bond.map(|bond| (None, Some(bond), None, None)),
             parse_cycle_digit.map(|digit| (None, None, Some(digit), None)),
             '('.map(|_| (None, None, None, Some(true))),
@@ -47,11 +87,9 @@ fn parse_molecule_next(input: &mut &str) -> ModalResult<Molecule> {
             if open {
                 stack.push((prev_node, prev_bond));
             } else {
-                if stack.is_empty() {
+                let Some((node, bond)) = stack.pop() else {
                     return Err(ErrMode::Cut(ContextError::new()));
-                }
-
-                let (node, bond) = stack.pop().unwrap();
+                };
                 prev_node = node;
                 prev_bond = bond;
             }
@@ -67,8 +105,12 @@ fn parse_molecule_next(input: &mut &str) -> ModalResult<Molecule> {
                 open_cycles.insert(digit, prev_node);
             }
         } else {
-            if let Some(atom) = atom {
+            if let Some((atom, bracket)) = atom {
+                let atomic_number = atom.element.atomic_number;
                 let node = molecule.add_atom(atom);
+                if !bracket {
+                    organic_nodes.push((node, atomic_number));
+                }
                 if prev_node != NodeIndex::end() && bond.is_none() {
                     pending_bonds.push((prev_node, node, Bond { order: prev_bond }));
                 }
@@ -89,6 +131,13 @@ fn parse_molecule_next(input: &mut &str) -> ModalResult<Molecule> {
 
     for (node1, node2, bond) in pending_bonds {
         molecule.add_bond(node1, node2, bond);
+    }
+
+    for (node, atomic_number) in organic_nodes {
+        let hs = implicit_hydrogens(&molecule, node, atomic_number);
+        if let Some(atom) = molecule.graph.node_weight_mut(node) {
+            atom.implicit_hs = hs;
+        }
     }
 
     Ok(molecule)
@@ -450,8 +499,49 @@ mod tests {
 
     #[test]
     fn molecule_weight() {
-        let m = parse_molecule("C([H])([H])([H])(H)").unwrap().1;
-        assert_eq!(m.weight(), 16.0423);
+        // methane with explicit, bracket and implicit hydrogens
+        for smiles in ["C([H])([H])([H])(H)", "[CH4]", "C"] {
+            let m = parse_molecule(smiles).unwrap().1;
+            assert!((m.weight() - 16.043).abs() < 1e-9, "{}", smiles);
+        }
+        // ethanol C2H6O
+        let m = parse_molecule("CCO").unwrap().1;
+        assert!((m.weight() - 46.069).abs() < 1e-9);
+        // caffeine C8H10N4O2
+        let m = parse_molecule("CN1C=NC2=C1C(=O)N(C(=O)N2C)C").unwrap().1;
+        assert!((m.weight() - 194.194).abs() < 1e-9);
+        // ammonium NH4 and the methylene radical CH2
+        let m = parse_molecule("[NH4+]").unwrap().1;
+        assert!((m.weight() - 18.039).abs() < 1e-9);
+        let m = parse_molecule("[CH2]").unwrap().1;
+        assert!((m.weight() - 14.027).abs() < 1e-9);
+    }
+
+    #[test]
+    fn implicit_hydrogens() {
+        let hs = |smiles: &str| -> Vec<u8> {
+            let m = parse_molecule(smiles).unwrap().1;
+            m.graph
+                .node_weights()
+                .map(|atom| atom.implicit_hs)
+                .collect()
+        };
+        assert_eq!(hs("C"), [4]);
+        assert_eq!(hs("C=O"), [2, 0]);
+        assert_eq!(hs("C#N"), [1, 0]);
+        assert_eq!(hs("CCl"), [3, 0]);
+        // bracket atoms take only their written hydrogens
+        assert_eq!(hs("[CH3]C"), [0, 3]);
+        // charges and radicals need brackets, so valence never adds hydrogens to them
+        assert_eq!(hs("[NH4+]"), [0]);
+        assert_eq!(hs("C[O-]"), [3, 0]);
+        assert_eq!(hs("[CH2]"), [0]);
+        assert_eq!(hs("[CH2]C"), [0, 3]);
+        // next valence when the first one is exceeded
+        assert_eq!(hs("CS(=O)C"), [3, 0, 0, 3]);
+        assert_eq!(hs("OP(=O)(O)O"), [1, 0, 0, 1, 1]);
+        // aromatic bonds spend an extra electron
+        assert_eq!(hs("C1:C:C:C:C:C1"), [1, 1, 1, 1, 1, 1]);
     }
 
     #[test]
