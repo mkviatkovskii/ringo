@@ -14,7 +14,7 @@ use winnow::stream::AsChar;
 use winnow::token::take_while;
 
 enum Token {
-    /// The atom, and whether it was written in brackets.
+    /// The atom, whether it was written in brackets, and its chirality tag.
     Atom(Atom, bool, Option<Chirality>),
     Bond(BondOrder, Option<bool>),
     Ring(u8),

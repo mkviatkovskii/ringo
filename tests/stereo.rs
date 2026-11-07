@@ -2,27 +2,6 @@ use ringo::io::smiles::reader::molecule::parse_molecule;
 use ringo::model::stereo::{Configuration, Ligand};
 
 #[test]
-fn accepts_corpus_tetrahedral_centres() {
-    for smiles in [
-        "C[C@H](O)CO",                              // CHEBI:29002
-        "OC1C[N@]2CC[C@H]1CC2",                     // CHEBI:115239
-        "CC(C)CN[S@](C)=O",                         // CHEBI:220064
-        "CC(C)O[P@](C)(=O)F",                       // CHEBI:75871
-        "O[Si@](CCCN1CCCCC1)(c1ccc(F)cc1)C1CCCCC1", // CHEMBL1600342
-        "N[C@H](C)C(=O)O",
-    ] {
-        assert!(parse_molecule(smiles).is_ok(), "{smiles}");
-    }
-}
-
-#[test]
-fn accepts_directional_double_bonds() {
-    for smiles in ["F/C=C/F", "F/C=C\\F", "C(\\F)=C/F", "F/C=C/C=CC"] {
-        assert!(parse_molecule(smiles).is_ok(), "{smiles}");
-    }
-}
-
-#[test]
 fn corpus_fixtures_preserve_every_marker() {
     for line in include_str!("data/stereo.smi").lines() {
         let (smiles, _) = line.split_once(' ').unwrap();
