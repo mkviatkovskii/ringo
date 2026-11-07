@@ -9,14 +9,26 @@ use std::fs::File;
 use std::io::{self, BufRead, BufReader, BufWriter, Seek, Write};
 
 /// Lines fingerprinted in parallel per batch: enough to keep every core busy, a few MB of memory
-const BATCH_LINES: usize = 50_000;
+pub const DEFAULT_BATCH_LINES: usize = 65_536;
 
 /// Writes `<smiles_file>.fp` with ECFP fingerprints of the given radius and length
 /// (a positive multiple of 64), and returns how many lines could not be parsed.
 /// Those lines get an empty fingerprint, so records stay aligned with lines.
-pub fn index_file(smiles_file: &str, radius: usize, bits: usize) -> io::Result<usize> {
+/// Lines are fingerprinted in parallel `batch_lines` at a time.
+pub fn index_file(
+    smiles_file: &str,
+    radius: usize,
+    bits: usize,
+    batch_lines: usize,
+) -> io::Result<usize> {
     let header = IndexHeader::new(radius, bits)
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
+    if batch_lines == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "batch_lines must be positive",
+        ));
+    }
 
     // open file for reading
     let fi = File::open(smiles_file).map_err(with_path(smiles_file))?;
@@ -31,7 +43,8 @@ pub fn index_file(smiles_file: &str, radius: usize, bits: usize) -> io::Result<u
     writer.write_all(&header.to_bytes())?;
 
     let mut reader = BufReader::new(fi);
-    let mut lines = read_batch(&mut reader, &mut offset).map_err(with_path(smiles_file))?;
+    let mut lines =
+        read_batch(&mut reader, &mut offset, batch_lines).map_err(with_path(smiles_file))?;
     let mut fingerprinted: Vec<(usize, Option<Fingerprint>)> = Vec::new();
     // one thread writes the previous batch and reads the next while the others fingerprint this
     // one (about 10% faster on ChEMBL than taking turns); the loop ends after writing the last batch
@@ -52,7 +65,7 @@ pub fn index_file(smiles_file: &str, radius: usize, bits: usize) -> io::Result<u
                     )?;
                     count += 1;
                 }
-                read_batch(&mut reader, &mut offset).map_err(with_path(smiles_file))
+                read_batch(&mut reader, &mut offset, batch_lines).map_err(with_path(smiles_file))
             },
             || {
                 lines
@@ -93,10 +106,14 @@ pub fn index_file(smiles_file: &str, radius: usize, bits: usize) -> io::Result<u
     Ok(skipped)
 }
 
-/// Reads up to `BATCH_LINES` lines with their byte offsets, moving `offset` past them.
-fn read_batch(reader: &mut impl BufRead, offset: &mut usize) -> io::Result<Vec<(usize, String)>> {
-    let mut lines = Vec::with_capacity(BATCH_LINES);
-    while lines.len() < BATCH_LINES {
+/// Reads up to `batch_lines` lines with their byte offsets, moving `offset` past them.
+fn read_batch(
+    reader: &mut impl BufRead,
+    offset: &mut usize,
+    batch_lines: usize,
+) -> io::Result<Vec<(usize, String)>> {
+    let mut lines = Vec::with_capacity(batch_lines);
+    while lines.len() < batch_lines {
         let mut line = String::new();
         // read_line returns the bytes consumed, including "\n" or "\r\n"
         let read = reader.read_line(&mut line)?;
@@ -111,7 +128,7 @@ fn read_batch(reader: &mut impl BufRead, offset: &mut usize) -> io::Result<Vec<(
 
 #[cfg(test)]
 pub(crate) mod test {
-    use crate::db::index::{index_file, BATCH_LINES};
+    use crate::db::index::{index_file, DEFAULT_BATCH_LINES};
     use crate::db::index_header::{IndexHeader, INDEX_HEADER_SIZE};
     use crate::db::index_item::{index_item_size, split_record};
     use crate::io::smiles::reader::molecule::parse_molecule;
@@ -153,7 +170,7 @@ pub(crate) mod test {
     fn test_index() {
         let dir = TestDir::new("test_index");
         let smiles_file = copy_sample_molecules(dir.path());
-        index_file(smiles_file.to_str().unwrap(), 3, 1024).unwrap();
+        index_file(smiles_file.to_str().unwrap(), 3, 1024, DEFAULT_BATCH_LINES).unwrap();
 
         let fp = std::fs::read(dir.path().join("molecules.smi.fp")).unwrap();
         // header, then 2 molecules, one fixed-size record each
@@ -182,7 +199,8 @@ pub(crate) mod test {
         )
         .unwrap();
 
-        let skipped = index_file(smiles_file.to_str().unwrap(), 2, 512).unwrap();
+        let skipped =
+            index_file(smiles_file.to_str().unwrap(), 2, 512, DEFAULT_BATCH_LINES).unwrap();
 
         assert_eq!(skipped, 2);
         let fp_file = dir.path().join("m.smi.fp");
@@ -198,15 +216,11 @@ pub(crate) mod test {
         let dir = TestDir::new("test_index_keeps_line_order");
         let smiles_file = dir.path().join("m.smi");
         let cycle = ["CCO", "c1ccccc1 benzene", "C(", "CCN"];
-        let lines: Vec<&str> = cycle
-            .iter()
-            .copied()
-            .cycle()
-            .take(BATCH_LINES + 3)
-            .collect();
+        // 3 batches of 3 and a last one of 2, so batches split the cycle at different points
+        let lines: Vec<&str> = cycle.iter().copied().cycle().take(11).collect();
         std::fs::write(&smiles_file, lines.join("\n")).unwrap();
 
-        let skipped = index_file(smiles_file.to_str().unwrap(), 2, 512).unwrap();
+        let skipped = index_file(smiles_file.to_str().unwrap(), 2, 512, 3).unwrap();
 
         assert_eq!(skipped, lines.iter().filter(|line| **line == "C(").count());
         let fp = std::fs::read(dir.path().join("m.smi.fp")).unwrap();
@@ -235,12 +249,15 @@ pub(crate) mod test {
     fn test_index_errors_instead_of_panicking() {
         let dir = TestDir::new("test_index_errors");
         let missing = dir.path().join("missing.smi");
-        let e = index_file(missing.to_str().unwrap(), 2, 512).unwrap_err();
+        let e = index_file(missing.to_str().unwrap(), 2, 512, DEFAULT_BATCH_LINES).unwrap_err();
         assert_eq!(e.kind(), std::io::ErrorKind::NotFound);
         assert!(e.to_string().contains("missing.smi"), "{e}");
 
         let smiles_file = copy_sample_molecules(dir.path());
-        let e = index_file(smiles_file.to_str().unwrap(), 2, 100).unwrap_err();
+        let e = index_file(smiles_file.to_str().unwrap(), 2, 100, DEFAULT_BATCH_LINES).unwrap_err();
+        assert_eq!(e.kind(), std::io::ErrorKind::InvalidInput);
+        // an empty batch would end indexing at once and write an empty index
+        let e = index_file(smiles_file.to_str().unwrap(), 2, 512, 0).unwrap_err();
         assert_eq!(e.kind(), std::io::ErrorKind::InvalidInput);
     }
 
@@ -250,13 +267,13 @@ pub(crate) mod test {
         let smiles_file = dir.path().join("m.smi");
         std::fs::write(&smiles_file, "CCO\nCCC\n").unwrap();
         let smiles_file = smiles_file.to_str().unwrap();
-        index_file(smiles_file, 2, 512).unwrap();
+        index_file(smiles_file, 2, 512, DEFAULT_BATCH_LINES).unwrap();
         let fp_file = dir.path().join("m.smi.fp");
         let old = std::fs::read(&fp_file).unwrap();
 
         // the second line is not UTF-8, so the rebuild fails after it has started writing
         std::fs::write(smiles_file, b"CCO\n\xff\xfe\n").unwrap();
-        let e = index_file(smiles_file, 2, 512).unwrap_err();
+        let e = index_file(smiles_file, 2, 512, DEFAULT_BATCH_LINES).unwrap_err();
         assert_eq!(e.kind(), std::io::ErrorKind::InvalidData);
         assert!(dir.path().join("m.smi.fp.tmp").exists());
         assert_eq!(std::fs::read(&fp_file).unwrap(), old);
