@@ -2,8 +2,11 @@ use crate::db::index_header::{IndexHeader, INDEX_HEADER_SIZE};
 use crate::db::index_item::{index_item_size, split_record};
 use crate::db::with_path;
 use crate::io::smiles::reader::molecule::parse_molecule;
+use rayon::prelude::*;
 use std::fs::File;
 use std::io::{self, BufRead, BufReader, Read, Seek};
+use std::ops::RangeInclusive;
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
 pub struct SearchResult {
     pub line: String,
@@ -42,15 +45,12 @@ pub fn similarity_search(
 
     // fingerprints file
     let fp_path = smiles_file.to_owned() + ".fp";
-    let fif = File::open(&fp_path).map_err(with_path(&fp_path))?;
+    let mut fif = File::open(&fp_path).map_err(with_path(&fp_path))?;
     let file_len = fif.metadata().map_err(with_path(&fp_path))?.len();
-    let mut buf_reader = BufReader::new(fif);
 
     // the query must use the index's fingerprint parameters
     let mut header = [0u8; INDEX_HEADER_SIZE];
-    buf_reader
-        .read_exact(&mut header)
-        .map_err(with_path(&fp_path))?;
+    fif.read_exact(&mut header).map_err(with_path(&fp_path))?;
     let header = IndexHeader::from_bytes(&header)
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, format!("{fp_path}: {e}")))?;
     // in the stored byte order, so records are scored without decoding them
@@ -62,7 +62,6 @@ pub fn similarity_search(
         .iter()
         .map(|chunk| u64::from_le_bytes(*chunk))
         .collect();
-    let query_ones = query_words.iter().map(|w| w.count_ones() as usize).sum();
     let item_size = index_item_size(header.bits);
 
     // stored offsets are only valid for the exact file that was indexed
@@ -87,32 +86,15 @@ pub fn similarity_search(
         )));
     }
 
-    let mut hits = Vec::new();
-    // about 1 MiB of whole records per read call, scored in place; one record per call made
-    // a ChEMBL scan over twice as slow
-    let block_records = ((1 << 20) / item_size).max(1);
-    let mut buf = vec![0u8; block_records * item_size];
-    let mut left = header.count;
-    'scan: while left > 0 {
-        let n = usize::try_from(left).map_or(block_records, |left| left.min(block_records));
-        let block = &mut buf[..n * item_size];
-        buf_reader.read_exact(block).map_err(with_path(&fp_path))?;
-        left -= n as u64;
-
-        for record in block.chunks_exact(item_size) {
-            let (position, fingerprint) = split_record(record).map_err(with_path(&fp_path))?;
-            let Some(similarity) = tanimoto(fingerprint, &query_words, query_ones) else {
-                continue;
-            };
-            if (min_similarity..=max_similarity).contains(&similarity) {
-                hits.push((similarity, position));
-                if mode == SearchMode::First && hits.len() >= limit {
-                    break 'scan;
-                }
-            }
-        }
-    }
-
+    let mut hits = scan(
+        &fp_path,
+        header.count,
+        item_size,
+        &query_words,
+        min_similarity..=max_similarity,
+        limit,
+        mode,
+    )?;
     if mode == SearchMode::Best {
         // best first; the sort is stable, so ties keep file order
         // shortcut: keeps every hit in memory, use a bounded BinaryHeap if low thresholds on huge files run out of memory
@@ -131,6 +113,79 @@ pub fn similarity_search(
             Ok(SearchResult { line, similarity })
         })
         .collect()
+}
+
+/// `(similarity, line offset)` pairs
+type Hits = Vec<(f32, usize)>;
+
+/// `(similarity, line offset)` of the `count` records in `fp_path` whose similarity is in
+/// `range`, in file order. In `first` mode only the first `limit` hits are complete.
+///
+/// Each thread reads 1 MiB blocks of whole records through its own handle and scores them in
+/// place. One thread already copies from the page cache at ~5 GB/s, so a single reader
+/// feeding scoring threads would gain nothing, and Windows serializes reads on a shared
+/// handle. Threads take blocks in file order, so the finished blocks are always a prefix of
+/// the file: once they hold `limit` hits, the first `limit` hits are among them.
+fn scan(
+    fp_path: &str,
+    count: u64,
+    item_size: usize,
+    query_words: &[u64],
+    range: RangeInclusive<f32>,
+    limit: usize,
+    mode: SearchMode,
+) -> io::Result<Hits> {
+    let query_ones = query_words.iter().map(|w| w.count_ones() as usize).sum();
+    let block_records = ((1 << 20) / item_size).max(1);
+    let blocks = count.div_ceil(block_records as u64);
+    let next_block = AtomicU64::new(0);
+    let found = AtomicUsize::new(0);
+    // shortcut: workers reopen the index by path, so re-indexing during a search can mix two
+    // indexes; open once and duplicate the handle per platform if that ever happens
+    let scan_blocks = || -> io::Result<Vec<(u64, Hits)>> {
+        let mut file = File::open(fp_path).map_err(with_path(fp_path))?;
+        let mut buf = vec![0u8; block_records * item_size];
+        let mut scanned = Vec::new();
+        while mode == SearchMode::Best || found.load(Ordering::Relaxed) < limit {
+            let block = next_block.fetch_add(1, Ordering::Relaxed);
+            if block >= blocks {
+                break;
+            }
+            let first = block * block_records as u64;
+            let n = usize::try_from(count - first)
+                .map_or(block_records, |left| left.min(block_records));
+            let block_bytes = &mut buf[..n * item_size];
+            file.seek(io::SeekFrom::Start(
+                INDEX_HEADER_SIZE as u64 + first * item_size as u64,
+            ))
+            .and_then(|_| file.read_exact(block_bytes))
+            .map_err(with_path(fp_path))?;
+
+            let mut hits = Vec::new();
+            for record in block_bytes.chunks_exact(item_size) {
+                let (position, fingerprint) = split_record(record).map_err(with_path(fp_path))?;
+                let Some(similarity) = tanimoto(fingerprint, query_words, query_ones) else {
+                    continue;
+                };
+                if range.contains(&similarity) {
+                    hits.push((similarity, position));
+                    if mode == SearchMode::First && hits.len() >= limit {
+                        break;
+                    }
+                }
+            }
+            found.fetch_add(hits.len(), Ordering::Relaxed);
+            scanned.push((block, hits));
+        }
+        Ok(scanned)
+    };
+    let scanned = (0..rayon::current_num_threads())
+        .into_par_iter()
+        .map(|_| scan_blocks())
+        .collect::<io::Result<Vec<_>>>()?;
+    let mut scanned: Vec<_> = scanned.into_iter().flatten().collect();
+    scanned.sort_unstable_by_key(|(block, _)| *block);
+    Ok(scanned.into_iter().flat_map(|(_, hits)| hits).collect())
 }
 
 /// Tanimoto of stored fingerprint bytes against the query, in one pass and without
@@ -154,8 +209,10 @@ fn tanimoto(record: &[u8], query_words: &[u64], query_ones: usize) -> Option<f32
 mod test {
     use crate::db::index::test::{copy_sample_molecules, TestDir};
     use crate::db::index::{index_file, DEFAULT_BATCH_LINES};
+    use crate::db::index_header::INDEX_HEADER_SIZE;
+    use crate::db::index_item::index_item_size;
     use crate::db::search::SearchMode::{Best, First};
-    use crate::db::search::{similarity_search, tanimoto};
+    use crate::db::search::{scan, similarity_search, tanimoto};
     use crate::io::smiles::reader::molecule::parse_molecule;
     use crate::math::similarity::tanimoto::tanimoto_bitset;
 
@@ -283,6 +340,45 @@ mod test {
         let results = similarity_search(smiles_file, "CCC", 0.0, 1.0, 3, First).unwrap();
         let lines: Vec<&str> = results.iter().map(|r| r.line.trim_end()).collect();
         assert_eq!(lines, ["CCO", "CCN", "CCC"]);
+    }
+
+    #[test]
+    fn test_scan_keeps_file_order_across_threads() {
+        let dir = TestDir::new("test_scan_file_order");
+        let fp_path = dir.path().join("m.smi.fp");
+        // 512-bit records, 14,563 to a 1 MiB block, so 7 blocks; every 1000th record matches
+        // and the others are empty, which never match
+        let count = 100_000;
+        let mut bytes = vec![0u8; INDEX_HEADER_SIZE];
+        for i in 0..count {
+            bytes.extend((i as u64).to_le_bytes());
+            bytes.extend([if i % 1000 == 0 { 0xff } else { 0 }; 64]);
+        }
+        std::fs::write(&fp_path, bytes).unwrap();
+        let fp_path = fp_path.to_str().unwrap();
+        let positions = |limit, mode| -> Vec<usize> {
+            let hits = scan(
+                fp_path,
+                count as u64,
+                index_item_size(512),
+                &[u64::MAX; 8],
+                0.0..=1.0,
+                limit,
+                mode,
+            );
+            hits.unwrap()
+                .into_iter()
+                .map(|(_, position)| position)
+                .collect()
+        };
+
+        let all: Vec<usize> = (0..count).step_by(1000).collect();
+        assert_eq!(positions(10, Best), all);
+        // limits within the first block and across several
+        for limit in [1, 20, 50, 100] {
+            assert_eq!(positions(limit, First)[..limit], all[..limit], "{limit}");
+        }
+        assert_eq!(positions(0, First), Vec::<usize>::new());
     }
 
     #[test]
