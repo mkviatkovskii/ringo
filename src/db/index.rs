@@ -28,7 +28,7 @@ pub fn index_file(smiles_file: &str) -> usize {
             break;
         }
         let fingerprint = match parse_molecule(line.trim_end_matches(['\n', '\r'])) {
-            Ok((_, molecule)) => molecule.ecfp(2, 512),
+            Ok((_, molecule)) => molecule.ecfp(),
             Err(_) => {
                 skipped += 1;
                 Fingerprint(FixedBitSet::with_capacity(FINGERPRINT_SIZE))

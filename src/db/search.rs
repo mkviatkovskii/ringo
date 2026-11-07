@@ -27,7 +27,7 @@ pub fn similarity_search(
     mode: SearchMode,
 ) -> Vec<SearchResult> {
     let query = parse_molecule(query).unwrap().1;
-    let query_fp = query.ecfp(2, 512);
+    let query_fp = query.ecfp();
 
     // smiles file
     let fis = File::open(smiles_file).expect("Could not open file");
