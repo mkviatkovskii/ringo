@@ -83,6 +83,6 @@ mod tests {
 
     #[test]
     fn parse_atom_13_c_h3_minus_incorrect_closing() {
-        assert!(parse_atom.parse_peek("[13CH3-C").is_err())
+        assert!(parse_atom.parse_peek("[13CH3-C").is_err());
     }
 }

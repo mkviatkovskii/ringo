@@ -35,6 +35,10 @@ impl IndexHeader {
         })
     }
 
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "new() keeps radius within u16 and bits within u32"
+    )]
     pub fn to_bytes(&self) -> [u8; INDEX_HEADER_SIZE] {
         let mut bytes = [0u8; INDEX_HEADER_SIZE];
         bytes[..8].copy_from_slice(&MAGIC);

@@ -18,14 +18,13 @@ fn parse_cycle_digit(input: &mut &str) -> ModalResult<u8> {
 }
 
 /// Hydrogens an atom outside brackets gets: the lowest normal valence that
-/// fits its bonds, minus the bonds (OpenSMILES organic subset rules).
+/// fits its bonds, minus the bonds (`OpenSMILES` organic subset rules).
 fn implicit_hydrogens(molecule: &Molecule, node: NodeIndex, atomic_number: u8) -> u8 {
     let valences: &[u8] = match atomic_number {
         5 => &[3],
         6 => &[4],
-        7 => &[3, 5],
+        7 | 15 => &[3, 5],
         8 => &[2],
-        15 => &[3, 5],
         16 => &[2, 4, 6],
         1 | 9 | 17 | 35 | 53 => &[1],
         _ => &[],
@@ -394,32 +393,32 @@ mod tests {
             16
         );
         assert!(m.has_bond(NodeIndex::new(0), NodeIndex::new(1)));
-        assert!(
+        assert_eq!(
             m.get_bond_by_atoms(NodeIndex::new(0), NodeIndex::new(1))
                 .unwrap()
-                .order
-                == BondOrder::Single
+                .order,
+            BondOrder::Single
         );
         assert!(m.has_bond(NodeIndex::new(1), NodeIndex::new(2)));
-        assert!(
+        assert_eq!(
             m.get_bond_by_atoms(NodeIndex::new(1), NodeIndex::new(2))
                 .unwrap()
-                .order
-                == BondOrder::Single
+                .order,
+            BondOrder::Single
         );
         assert!(m.has_bond(NodeIndex::new(0), NodeIndex::new(2)));
-        assert!(
+        assert_eq!(
             m.get_bond_by_atoms(NodeIndex::new(0), NodeIndex::new(2))
                 .unwrap()
-                .order
-                == BondOrder::Double
+                .order,
+            BondOrder::Double
         );
         assert!(m.has_bond(NodeIndex::new(2), NodeIndex::new(3)));
-        assert!(
+        assert_eq!(
             m.get_bond_by_atoms(NodeIndex::new(2), NodeIndex::new(3))
                 .unwrap()
-                .order
-                == BondOrder::Single
+                .order,
+            BondOrder::Single
         );
     }
 
@@ -449,45 +448,45 @@ mod tests {
             8
         );
         assert!(m.has_bond(NodeIndex::new(0), NodeIndex::new(1)));
-        assert!(
+        assert_eq!(
             m.get_bond_by_atoms(NodeIndex::new(0), NodeIndex::new(1))
                 .unwrap()
-                .order
-                == BondOrder::Single
+                .order,
+            BondOrder::Single
         );
         assert!(m.has_bond(NodeIndex::new(1), NodeIndex::new(2)));
-        assert!(
+        assert_eq!(
             m.get_bond_by_atoms(NodeIndex::new(1), NodeIndex::new(2))
                 .unwrap()
-                .order
-                == BondOrder::Double
+                .order,
+            BondOrder::Double
         );
         assert!(m.has_bond(NodeIndex::new(1), NodeIndex::new(3)));
-        assert!(
+        assert_eq!(
             m.get_bond_by_atoms(NodeIndex::new(1), NodeIndex::new(3))
                 .unwrap()
-                .order
-                == BondOrder::Single
+                .order,
+            BondOrder::Single
         );
         assert!(m.has_bond(NodeIndex::new(3), NodeIndex::new(4)));
-        assert!(
+        assert_eq!(
             m.get_bond_by_atoms(NodeIndex::new(3), NodeIndex::new(4))
                 .unwrap()
-                .order
-                == BondOrder::Single
+                .order,
+            BondOrder::Single
         );
         assert!(m.has_bond(NodeIndex::new(3), NodeIndex::new(0)));
-        assert!(
+        assert_eq!(
             m.get_bond_by_atoms(NodeIndex::new(3), NodeIndex::new(0))
                 .unwrap()
-                .order
-                == BondOrder::Double
+                .order,
+            BondOrder::Double
         );
     }
 
     #[test]
     fn parse_molecule_c1cc() {
-        assert!(parse_molecule("C1CC").is_err())
+        assert!(parse_molecule("C1CC").is_err());
     }
 
     #[test]
@@ -547,10 +546,10 @@ mod tests {
     #[test]
     fn ecfp() {
         for smiles in ["C", "CC", "C1COCNC1", "CN1C=NC2=C1C(=O)N(C(=O)N2C)C"] {
-            println!("{}: ", smiles);
+            println!("{smiles}: ");
             let m = parse_molecule(smiles).unwrap().1;
             let result = m.ecfp(2, 512);
-            println!("{:?}", result);
+            println!("{result:?}");
         }
     }
 }

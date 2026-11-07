@@ -1,5 +1,3 @@
-extern crate ringo;
-
 use ringo::db::index::index_file;
 use ringo::db::index_header::IndexHeader;
 use std::process::ExitCode;
@@ -45,7 +43,7 @@ mod tests {
     use super::parse_args;
 
     fn args(list: &[&str]) -> Vec<String> {
-        list.iter().map(|s| s.to_string()).collect()
+        list.iter().map(std::string::ToString::to_string).collect()
     }
 
     #[test]

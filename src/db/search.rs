@@ -306,7 +306,7 @@ mod test {
 
             let results = similarity_search(smiles_file, "CCC", 0.0, 1.0, 10, Best).unwrap();
             let mut lines: Vec<&str> = results.iter().map(|r| r.line.trim_end()).collect();
-            lines.sort();
+            lines.sort_unstable();
             assert_eq!(
                 lines,
                 ["CCC propane", "CCN ethylamine", "CCO ethanol"],

@@ -1,6 +1,10 @@
 use fixedbitset::FixedBitSet;
 
 /// Returns 0.0 when both sets are empty, so empty records never match.
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "counts above 2^24 bits only blur digits far below what a score shows"
+)]
 pub fn tanimoto_bitset(a: &FixedBitSet, b: &FixedBitSet) -> f32 {
     let union = a.union_count(b);
     if union == 0 {
@@ -22,7 +26,7 @@ mod tests {
         let mut b = FixedBitSet::with_capacity(8);
         b.insert(0);
         b.insert(1);
-        assert_eq!(tanimoto_bitset(&a, &b), 0.33333334);
+        assert_eq!(tanimoto_bitset(&a, &b), 0.333_333_34);
     }
 
     #[test]

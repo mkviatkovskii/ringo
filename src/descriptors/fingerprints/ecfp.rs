@@ -31,12 +31,13 @@ impl Molecule {
                 .edges(node)
                 .any(|edge| ring_bonds.contains(edge.id().index()));
             let id = fnv1a([
-                atom.element.atomic_number as u64,
+                u64::from(atom.element.atomic_number),
                 graph.edges(node).count() as u64,
-                atom.hs as u64,
-                atom.charge as u64,
-                atom.isotope as u64,
-                in_ring as u64,
+                u64::from(atom.hs),
+                // sign-extend, so a negative charge keeps the bits it had with `as u64`
+                i64::from(atom.charge).cast_unsigned(),
+                u64::from(atom.isotope),
+                u64::from(in_ring),
             ]);
             ids[node.index()] = id;
             fp.insert(bit(id, bits));
@@ -91,6 +92,10 @@ impl Molecule {
 /// The splitmix64 finalizer mixes the high bits of `id` into the low ones the modulo
 /// keeps; FNV-1a alone only carries changes upward. Modulo in u64, because
 /// `id as usize` would drop the high half on 32-bit targets.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "the result is below `bits`, a usize"
+)]
 fn bit(id: u64, bits: usize) -> usize {
     let mut z = id;
     z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
@@ -114,7 +119,7 @@ fn bond_code(bond: &Bond) -> u64 {
 fn fnv1a(words: impl IntoIterator<Item = u64>) -> u64 {
     let mut hash = 0xcbf2_9ce4_8422_2325;
     for byte in words.into_iter().flat_map(u64::to_le_bytes) {
-        hash ^= byte as u64;
+        hash ^= u64::from(byte);
         hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
     }
     hash

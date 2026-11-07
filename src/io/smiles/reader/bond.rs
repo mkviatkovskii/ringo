@@ -21,7 +21,7 @@ mod tests {
 
     #[test]
     fn parse_bond_empty() {
-        assert!(parse_bond.parse_peek("").is_err())
+        assert!(parse_bond.parse_peek("").is_err());
     }
 
     #[test]

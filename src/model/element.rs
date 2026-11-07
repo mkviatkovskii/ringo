@@ -4,6 +4,10 @@ pub struct Element {
 }
 
 impl Element {
+    #[expect(
+        clippy::unreadable_literal,
+        reason = "weights are written as in the IUPAC table"
+    )]
     pub fn atomic_weight(&self) -> f64 {
         match self.atomic_number {
             1 => 1.008,

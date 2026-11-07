@@ -37,13 +37,13 @@ pub fn index_file(smiles_file: &str, radius: usize, bits: usize) -> io::Result<u
         if read == 0 {
             break;
         }
-        let fingerprint = match parse_molecule(line.trim_end_matches(['\n', '\r'])) {
-            Ok((_, molecule)) => molecule.ecfp(radius, bits),
-            Err(_) => {
+        let fingerprint =
+            if let Ok((_, molecule)) = parse_molecule(line.trim_end_matches(['\n', '\r'])) {
+                molecule.ecfp(radius, bits)
+            } else {
                 skipped += 1;
                 Fingerprint(FixedBitSet::with_capacity(bits))
-            }
-        };
+            };
         let index_item = IndexItem {
             position: offset,
             fingerprint,
