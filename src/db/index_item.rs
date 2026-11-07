@@ -1,4 +1,5 @@
 use crate::model::fingerprint::Fingerprint;
+use std::io;
 
 /// On-disk record: `u64` little-endian line offset, then `bits / 8` fingerprint bytes.
 pub fn index_item_size(bits: usize) -> usize {
@@ -18,13 +19,16 @@ impl IndexItem {
         bytes
     }
 
-    pub fn from_bytes(bytes: &[u8]) -> IndexItem {
-        let (position, fingerprint) = bytes.split_first_chunk::<8>().unwrap();
-        IndexItem {
+    pub fn from_bytes(bytes: &[u8]) -> io::Result<IndexItem> {
+        let invalid = |msg: &str| io::Error::new(io::ErrorKind::InvalidData, msg);
+        let (position, fingerprint) = bytes
+            .split_first_chunk::<8>()
+            .ok_or_else(|| invalid("index record is too short"))?;
+        Ok(IndexItem {
             position: usize::try_from(u64::from_le_bytes(*position))
-                .expect("offset does not fit in usize"),
+                .map_err(|_| invalid("offset does not fit in usize"))?,
             fingerprint: Fingerprint::from_bytes(fingerprint),
-        }
+        })
     }
 }
 
@@ -45,7 +49,7 @@ mod tests {
         ii.fingerprint.0.set(1, true);
         ii.fingerprint.0.set(17, true);
 
-        let decoded = IndexItem::from_bytes(&ii.to_bytes());
+        let decoded = IndexItem::from_bytes(&ii.to_bytes()).unwrap();
         assert_eq!(decoded.position, 0);
         assert_eq!(
             decoded.fingerprint.0.ones().collect::<Vec<usize>>(),
@@ -66,7 +70,7 @@ mod tests {
         assert_eq!(bytes.len(), index_item_size(512));
         assert_eq!(index_item_size(512), 72);
 
-        let decoded = IndexItem::from_bytes(&bytes);
+        let decoded = IndexItem::from_bytes(&bytes).unwrap();
         assert_eq!(decoded.position, u32::MAX as usize);
         assert_eq!(decoded.fingerprint.0.count_ones(..), 512);
     }

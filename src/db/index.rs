@@ -1,34 +1,38 @@
 use crate::db::index_header::IndexHeader;
 use crate::db::index_item::IndexItem;
+use crate::db::with_path;
 use crate::io::smiles::reader::molecule::parse_molecule;
 use crate::model::fingerprint::Fingerprint;
 use fixedbitset::FixedBitSet;
 use std::fs::File;
-use std::io::{BufRead, BufReader, BufWriter, Write};
+use std::io::{self, BufRead, BufReader, BufWriter, Write};
 
 /// Writes `<smiles_file>.fp` with ECFP fingerprints of the given radius and length
 /// (a positive multiple of 64), and returns how many lines could not be parsed.
 /// Those lines get an empty fingerprint, so records stay aligned with lines.
-pub fn index_file(smiles_file: &str, radius: usize, bits: usize) -> usize {
-    let header = IndexHeader::new(radius, bits).unwrap_or_else(|e| panic!("{e}"));
+pub fn index_file(smiles_file: &str, radius: usize, bits: usize) -> io::Result<usize> {
+    let header = IndexHeader::new(radius, bits)
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
 
     // open file for reading
-    let fi = File::open(smiles_file).expect("Could not open file");
+    let fi = File::open(smiles_file).map_err(with_path(smiles_file))?;
 
     // write to a temp file and rename at the end, so a failed run keeps the old index
     let fp_path = smiles_file.to_owned() + ".fp";
     let tmp_path = fp_path.clone() + ".tmp";
     let mut offset = 0;
     let mut skipped = 0;
-    let mut writer = BufWriter::new(File::create(&tmp_path).unwrap());
-    writer.write_all(&header.to_bytes()).unwrap();
+    let mut writer = BufWriter::new(File::create(&tmp_path).map_err(with_path(&tmp_path))?);
+    writer.write_all(&header.to_bytes())?;
 
     let mut reader = BufReader::new(fi);
     let mut line = String::new();
     loop {
         line.clear();
         // read_line returns the bytes consumed, including "\n" or "\r\n"
-        let read = reader.read_line(&mut line).unwrap();
+        let read = reader
+            .read_line(&mut line)
+            .map_err(with_path(smiles_file))?;
         if read == 0 {
             break;
         }
@@ -45,12 +49,15 @@ pub fn index_file(smiles_file: &str, radius: usize, bits: usize) -> usize {
         };
         offset += read;
 
-        writer.write_all(&index_item.to_bytes()).unwrap();
+        writer.write_all(&index_item.to_bytes())?;
     }
     // flush, sync and close before rename (an open file cannot be renamed on Windows)
-    writer.into_inner().unwrap().sync_all().unwrap();
-    std::fs::rename(&tmp_path, &fp_path).unwrap();
-    skipped
+    writer
+        .into_inner()
+        .map_err(io::IntoInnerError::into_error)?
+        .sync_all()?;
+    std::fs::rename(&tmp_path, &fp_path).map_err(with_path(&fp_path))?;
+    Ok(skipped)
 }
 
 #[cfg(test)]
@@ -96,7 +103,7 @@ pub(crate) mod test {
     fn test_index() {
         let dir = TestDir::new("test_index");
         let smiles_file = copy_sample_molecules(dir.path());
-        index_file(smiles_file.to_str().unwrap(), 3, 1024);
+        index_file(smiles_file.to_str().unwrap(), 3, 1024).unwrap();
 
         let fp = std::fs::read(dir.path().join("molecules.smi.fp")).unwrap();
         // header, then 2 molecules, one fixed-size record each
@@ -112,7 +119,7 @@ pub(crate) mod test {
         // the chiral line is not supported yet and must not abort indexing
         std::fs::write(&smiles_file, "CCO\nN[C@H](C)C(=O)O\nCCC\n").unwrap();
 
-        let skipped = index_file(smiles_file.to_str().unwrap(), 2, 512);
+        let skipped = index_file(smiles_file.to_str().unwrap(), 2, 512).unwrap();
 
         assert_eq!(skipped, 1);
         let fp_file = dir.path().join("m.smi.fp");
@@ -121,5 +128,18 @@ pub(crate) mod test {
             (INDEX_HEADER_SIZE + 3 * index_item_size(512)) as u64
         );
         assert!(!dir.path().join("m.smi.fp.tmp").exists());
+    }
+
+    #[test]
+    fn test_index_errors_instead_of_panicking() {
+        let dir = TestDir::new("test_index_errors");
+        let missing = dir.path().join("missing.smi");
+        let e = index_file(missing.to_str().unwrap(), 2, 512).unwrap_err();
+        assert_eq!(e.kind(), std::io::ErrorKind::NotFound);
+        assert!(e.to_string().contains("missing.smi"), "{e}");
+
+        let smiles_file = copy_sample_molecules(dir.path());
+        let e = index_file(smiles_file.to_str().unwrap(), 2, 100).unwrap_err();
+        assert_eq!(e.kind(), std::io::ErrorKind::InvalidInput);
     }
 }

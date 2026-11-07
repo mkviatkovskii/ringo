@@ -1,9 +1,10 @@
 use crate::db::index_header::{IndexHeader, INDEX_HEADER_SIZE};
 use crate::db::index_item::{index_item_size, IndexItem};
+use crate::db::with_path;
 use crate::io::smiles::reader::molecule::parse_molecule;
 use crate::math::similarity::tanimoto::tanimoto_bitset;
 use std::fs::File;
-use std::io::{BufRead, BufReader, Read, Seek};
+use std::io::{self, BufRead, BufReader, Read, Seek};
 
 pub struct SearchResult {
     pub line: String,
@@ -26,25 +27,33 @@ pub fn similarity_search(
     max_similarity: f32,
     limit: usize,
     mode: SearchMode,
-) -> Vec<SearchResult> {
-    let query = parse_molecule(query).unwrap().1;
+) -> io::Result<Vec<SearchResult>> {
+    let query = parse_molecule(query)
+        .map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("could not parse query {query}"),
+            )
+        })?
+        .1;
 
     // smiles file
-    let fis = File::open(smiles_file).expect("Could not open file");
+    let fis = File::open(smiles_file).map_err(with_path(smiles_file))?;
     let mut reader = BufReader::new(fis);
 
     //fingerprings file
-    let fif = File::open(smiles_file.to_owned() + ".fp").expect("Could not open file");
-    let file_len = fif.metadata().unwrap().len();
+    let fp_path = smiles_file.to_owned() + ".fp";
+    let fif = File::open(&fp_path).map_err(with_path(&fp_path))?;
+    let file_len = fif.metadata().map_err(with_path(&fp_path))?.len();
     let mut buf_reader = BufReader::new(fif);
 
     // the query must use the index's fingerprint parameters
     let mut header = [0u8; INDEX_HEADER_SIZE];
     buf_reader
         .read_exact(&mut header)
-        .expect("index file is too short");
-    let header =
-        IndexHeader::from_bytes(&header).unwrap_or_else(|e| panic!("{smiles_file}.fp: {e}"));
+        .map_err(with_path(&fp_path))?;
+    let header = IndexHeader::from_bytes(&header)
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, format!("{fp_path}: {e}")))?;
     let query_fp = query.ecfp(header.radius, header.bits);
     let item_size = index_item_size(header.bits);
     let index_count = (file_len - INDEX_HEADER_SIZE as u64) / item_size as u64;
@@ -54,10 +63,12 @@ pub fn similarity_search(
 
     for _ in 0..index_count {
         // read index item from file
-        buf_reader.read_exact(&mut buf).unwrap();
+        buf_reader
+            .read_exact(&mut buf)
+            .map_err(with_path(&fp_path))?;
 
         // decode index item
-        let index_item = IndexItem::from_bytes(&buf);
+        let index_item = IndexItem::from_bytes(&buf).map_err(with_path(&fp_path))?;
 
         // calculate similarity
         let similarity = tanimoto_bitset(&index_item.fingerprint.0, &query_fp.0);
@@ -79,14 +90,14 @@ pub fn similarity_search(
 
     hits.into_iter()
         .map(|(similarity, position)| {
-            reader
-                .seek(std::io::SeekFrom::Start(position as u64))
-                .unwrap();
+            reader.seek(io::SeekFrom::Start(position as u64))?;
 
             let mut line = String::new();
-            reader.read_line(&mut line).unwrap();
+            reader
+                .read_line(&mut line)
+                .map_err(with_path(smiles_file))?;
             // println!("{i} {similarity} {position} {line}");
-            SearchResult { line, similarity }
+            Ok(SearchResult { line, similarity })
         })
         .collect()
 }
@@ -105,7 +116,7 @@ mod test {
         let dir = TestDir::new("test_similarity_search");
         let smiles_file = copy_sample_molecules(dir.path());
         let smiles_file = smiles_file.to_str().unwrap();
-        index_file(smiles_file, 2, 512);
+        index_file(smiles_file, 2, 512).unwrap();
 
         let results = similarity_search(
             smiles_file,
@@ -114,7 +125,8 @@ mod test {
             1.0,
             100,
             Best,
-        );
+        )
+        .unwrap();
         assert_eq!(results.len(), 1);
         assert!(results[0].line.starts_with("CC(C)CC1=CC=C(C=C1)C(C)C(=O)O"));
         assert_eq!(results[0].similarity, 1.0);
@@ -125,7 +137,8 @@ mod test {
             1.0,
             100,
             Best,
-        );
+        )
+        .unwrap();
         assert_eq!(results.len(), 2);
     }
 
@@ -136,21 +149,21 @@ mod test {
         // the exact match is last, so a search that stops early never sees it
         std::fs::write(&smiles_file, "CCO\nCCN\nCCC\n").unwrap();
         let smiles_file = smiles_file.to_str().unwrap();
-        index_file(smiles_file, 2, 512);
+        index_file(smiles_file, 2, 512).unwrap();
 
-        let results = similarity_search(smiles_file, "CCC", 0.0, 1.0, 1, Best);
+        let results = similarity_search(smiles_file, "CCC", 0.0, 1.0, 1, Best).unwrap();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].line.trim_end(), "CCC");
         assert_eq!(results[0].similarity, 1.0);
 
-        let results = similarity_search(smiles_file, "CCC", 0.0, 1.0, 10, Best);
+        let results = similarity_search(smiles_file, "CCC", 0.0, 1.0, 10, Best).unwrap();
         assert_eq!(results.len(), 3);
         assert!(results
             .windows(2)
             .all(|w| w[0].similarity >= w[1].similarity));
 
         // max_similarity drops the exact match
-        let results = similarity_search(smiles_file, "CCC", 0.0, 0.99, 10, Best);
+        let results = similarity_search(smiles_file, "CCC", 0.0, 0.99, 10, Best).unwrap();
         assert_eq!(results.len(), 2);
         assert!(results.iter().all(|r| r.line.trim_end() != "CCC"));
     }
@@ -161,9 +174,9 @@ mod test {
         let smiles_file = dir.path().join("m.smi");
         std::fs::write(&smiles_file, "CCO\nCCN\nCCC\n").unwrap();
         let smiles_file = smiles_file.to_str().unwrap();
-        index_file(smiles_file, 2, 512);
+        index_file(smiles_file, 2, 512).unwrap();
 
-        let results = similarity_search(smiles_file, "CCC", 0.0, 1.0, 2, First);
+        let results = similarity_search(smiles_file, "CCC", 0.0, 1.0, 2, First).unwrap();
         let lines: Vec<&str> = results.iter().map(|r| r.line.trim_end()).collect();
         assert_eq!(lines, ["CCO", "CCN"]);
     }
@@ -174,9 +187,9 @@ mod test {
         let smiles_file = dir.path().join("m.smi");
         std::fs::write(&smiles_file, "CCO\nCCC\n").unwrap();
         let smiles_file = smiles_file.to_str().unwrap();
-        index_file(smiles_file, 3, 1024);
+        index_file(smiles_file, 3, 1024).unwrap();
 
-        let results = similarity_search(smiles_file, "CCC", 0.0, 1.0, 10, Best);
+        let results = similarity_search(smiles_file, "CCC", 0.0, 1.0, 10, Best).unwrap();
         let fp = |s| parse_molecule(s).unwrap().1.ecfp(3, 1024);
         assert_eq!(results[0].similarity, 1.0);
         assert_eq!(
@@ -186,7 +199,6 @@ mod test {
     }
 
     #[test]
-    #[should_panic(expected = "re-index")]
     fn test_search_rejects_index_without_header() {
         let dir = TestDir::new("test_search_old_index");
         let smiles_file = dir.path().join("m.smi");
@@ -194,7 +206,38 @@ mod test {
         // a pre-header index: one 72-byte record starting with offset 0
         std::fs::write(dir.path().join("m.smi.fp"), [0u8; 72]).unwrap();
 
-        similarity_search(smiles_file.to_str().unwrap(), "CCC", 0.0, 1.0, 10, Best);
+        let e = similarity_search(smiles_file.to_str().unwrap(), "CCC", 0.0, 1.0, 10, Best)
+            .err()
+            .unwrap();
+        assert!(e.to_string().contains("re-index"), "{e}");
+    }
+
+    #[test]
+    fn test_search_errors_instead_of_panicking() {
+        let dir = TestDir::new("test_search_errors");
+        let smiles_file = dir.path().join("m.smi");
+        std::fs::write(&smiles_file, "CCC\n").unwrap();
+        let smiles_file = smiles_file.to_str().unwrap();
+        let search = |query| similarity_search(smiles_file, query, 0.0, 1.0, 10, Best).err();
+
+        // no index yet
+        let e = search("CCC").unwrap();
+        assert_eq!(e.kind(), std::io::ErrorKind::NotFound);
+        assert!(e.to_string().contains("m.smi.fp"), "{e}");
+
+        // index cut off inside its header
+        std::fs::write(smiles_file.to_owned() + ".fp", [0u8; 4]).unwrap();
+        assert_eq!(
+            search("CCC").unwrap().kind(),
+            std::io::ErrorKind::UnexpectedEof
+        );
+
+        // a query the reader cannot parse
+        index_file(smiles_file, 2, 512).unwrap();
+        assert_eq!(
+            search("C1CC").unwrap().kind(),
+            std::io::ErrorKind::InvalidInput
+        );
     }
 
     #[test]
@@ -205,9 +248,9 @@ mod test {
             let content = ["CCO ethanol", "CCN ethylamine", "CCC propane"].join(ending) + ending;
             std::fs::write(&smiles_file, content).unwrap();
             let smiles_file = smiles_file.to_str().unwrap();
-            index_file(smiles_file, 2, 512);
+            index_file(smiles_file, 2, 512).unwrap();
 
-            let results = similarity_search(smiles_file, "CCC", 0.0, 1.0, 10, Best);
+            let results = similarity_search(smiles_file, "CCC", 0.0, 1.0, 10, Best).unwrap();
             let mut lines: Vec<&str> = results.iter().map(|r| r.line.trim_end()).collect();
             lines.sort();
             assert_eq!(
