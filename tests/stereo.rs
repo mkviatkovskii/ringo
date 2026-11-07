@@ -1,3 +1,5 @@
+pub mod common;
+
 use ringo::io::smiles::reader::molecule::parse_molecule;
 use ringo::model::stereo::{Configuration, Ligand};
 
@@ -198,33 +200,11 @@ fn directional_meaning_and_errors() {
 
 #[test]
 fn indexes_newly_supported_stereo_without_changing_fingerprints() {
-    let path = std::env::temp_dir().join(format!("ringo-stereo-{}.smi", std::process::id()));
-    std::fs::write(&path, "N[C@H](C)C(=O)O alanine\nF/C=C/F alkene\n").unwrap();
-    assert_eq!(
-        ringo::db::index::index_file(
-            path.to_str().unwrap(),
-            2,
-            512,
-            ringo::db::index::DEFAULT_BATCH_LINES
-        )
-        .unwrap(),
-        0
+    common::assert_search(
+        "stereo",
+        "N[C@H](C)C(=O)O alanine\nF/C=C/F alkene\n",
+        ["N[C@@H](C)C(=O)O", "F/C=C\\F"],
     );
-    for query in ["N[C@@H](C)C(=O)O", "F/C=C\\F"] {
-        let results = ringo::db::search::similarity_search(
-            path.to_str().unwrap(),
-            query,
-            1.0,
-            1.0,
-            10,
-            ringo::db::search::SearchMode::Best,
-        )
-        .unwrap();
-        assert_eq!(results.len(), 1);
-        assert_eq!(results[0].similarity, 1.0);
-    }
-    std::fs::remove_file(path.to_str().unwrap().to_owned() + ".fp").unwrap();
-    std::fs::remove_file(path).unwrap();
 }
 
 #[test]

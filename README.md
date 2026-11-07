@@ -1,6 +1,11 @@
 # Ringo
 File chemical search engine written in Rust.
 
+Bracket atoms accept a trailing numeric class/map label, such as `[CH3:12]`,
+`[NH4+:005]`, or `[1*:0]`. `Atom::atom_class` stores the label as a `u32`;
+an absent label is zero. Labels do not affect fingerprints or stereochemistry.
+Malformed labels and values above `u32::MAX` are parsing errors.
+
 The SMILES reader preserves tetrahedral (`@`, `@@`, `@TH1`, `@TH2`),
 trigonal-bipyramidal (`@TB1`–`@TB20`), octahedral (`@OH1`–`@OH30`),
 and ordinary double-bond (`/`, `\`) configurations. Use
