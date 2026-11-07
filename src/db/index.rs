@@ -5,7 +5,7 @@ use crate::io::smiles::reader::molecule::parse_molecule;
 use crate::model::fingerprint::Fingerprint;
 use fixedbitset::FixedBitSet;
 use std::fs::File;
-use std::io::{self, BufRead, BufReader, BufWriter, Write};
+use std::io::{self, BufRead, BufReader, BufWriter, Seek, Write};
 
 /// Writes `<smiles_file>.fp` with ECFP fingerprints of the given radius and length
 /// (a positive multiple of 64), and returns how many lines could not be parsed.
@@ -22,6 +22,7 @@ pub fn index_file(smiles_file: &str, radius: usize, bits: usize) -> io::Result<u
     let tmp_path = fp_path.clone() + ".tmp";
     let mut offset = 0;
     let mut skipped = 0;
+    let mut count = 0;
     let mut writer = BufWriter::new(File::create(&tmp_path).map_err(with_path(&tmp_path))?);
     writer.write_all(&header.to_bytes())?;
 
@@ -50,7 +51,16 @@ pub fn index_file(smiles_file: &str, radius: usize, bits: usize) -> io::Result<u
         offset += read;
 
         writer.write_all(&index_item.to_bytes())?;
+        count += 1;
     }
+    // the SMILES length and record count are only known now, so rewrite the header
+    let header = IndexHeader {
+        smiles_len: offset as u64,
+        count,
+        ..header
+    };
+    writer.seek(io::SeekFrom::Start(0))?;
+    writer.write_all(&header.to_bytes())?;
     // flush, sync and close before rename (an open file cannot be renamed on Windows)
     writer
         .into_inner()
@@ -109,7 +119,15 @@ pub(crate) mod test {
         // header, then 2 molecules, one fixed-size record each
         assert_eq!(fp.len(), INDEX_HEADER_SIZE + 2 * index_item_size(1024));
         let header = IndexHeader::from_bytes(fp[..INDEX_HEADER_SIZE].try_into().unwrap());
-        assert_eq!(header, IndexHeader::new(3, 1024));
+        let smiles_len = std::fs::metadata(&smiles_file).unwrap().len();
+        assert_eq!(
+            header,
+            Ok(IndexHeader {
+                smiles_len,
+                count: 2,
+                ..IndexHeader::new(3, 1024).unwrap()
+            })
+        );
     }
 
     #[test]

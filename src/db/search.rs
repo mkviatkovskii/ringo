@@ -56,12 +56,33 @@ pub fn similarity_search(
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, format!("{fp_path}: {e}")))?;
     let query_fp = query.ecfp(header.radius, header.bits);
     let item_size = index_item_size(header.bits);
-    let index_count = (file_len - INDEX_HEADER_SIZE as u64) / item_size as u64;
+
+    // stored offsets are only valid for the exact file that was indexed
+    let stale = |msg: String| io::Error::new(io::ErrorKind::InvalidData, msg + ": re-index");
+    // shortcut: compares lengths only, so an edit that keeps the size goes unnoticed; store a hash if that matters
+    let smiles_len = reader
+        .get_ref()
+        .metadata()
+        .map_err(with_path(smiles_file))?
+        .len();
+    if smiles_len != header.smiles_len {
+        return Err(stale(format!("{smiles_file} changed since it was indexed")));
+    }
+    let expected_len = header
+        .count
+        .checked_mul(item_size as u64)
+        .and_then(|records| records.checked_add(INDEX_HEADER_SIZE as u64));
+    if expected_len != Some(file_len) {
+        return Err(stale(format!(
+            "{fp_path} does not hold the {} records its header lists",
+            header.count
+        )));
+    }
 
     let mut hits = Vec::new();
     let mut buf = vec![0u8; item_size];
 
-    for _ in 0..index_count {
+    for _ in 0..header.count {
         // read index item from file
         buf_reader
             .read_exact(&mut buf)
@@ -210,6 +231,39 @@ mod test {
             .err()
             .unwrap();
         assert!(e.to_string().contains("re-index"), "{e}");
+    }
+
+    #[test]
+    fn test_search_rejects_stale_index() {
+        let dir = TestDir::new("test_search_stale_index");
+        let smiles_file = dir.path().join("m.smi");
+        std::fs::write(&smiles_file, "CCO\nCCC\n").unwrap();
+        let smiles_file = smiles_file.to_str().unwrap();
+        let fp_file = smiles_file.to_owned() + ".fp";
+        let search = || similarity_search(smiles_file, "CCC", 0.0, 1.0, 10, Best).err();
+
+        // SMILES file edited after indexing: stored offsets would point at the wrong lines
+        index_file(smiles_file, 2, 512).unwrap();
+        std::fs::write(smiles_file, "CCCO\nCCC\n").unwrap();
+        let e = search().unwrap();
+        assert!(
+            e.to_string().contains("changed since it was indexed"),
+            "{e}"
+        );
+        assert!(e.to_string().contains("re-index"), "{e}");
+
+        // index missing its last byte, or with bytes appended
+        index_file(smiles_file, 2, 512).unwrap();
+        let fp = std::fs::read(&fp_file).unwrap();
+        for bad in [&fp[..fp.len() - 1], &[fp.as_slice(), &[0]].concat()] {
+            std::fs::write(&fp_file, bad).unwrap();
+            let e = search().unwrap();
+            assert!(e.to_string().contains("records its header lists"), "{e}");
+        }
+
+        // the untouched index still works
+        std::fs::write(&fp_file, &fp).unwrap();
+        assert!(search().is_none());
     }
 
     #[test]
