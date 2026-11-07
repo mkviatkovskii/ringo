@@ -43,7 +43,7 @@ fn implicit_hydrogens(
     node: NodeIndex,
     atomic_number: u8,
     aromatic: bool,
-) -> u8 {
+) -> ModalResult<u8> {
     let mut valences: &[u8] = match atomic_number {
         5 => &[3],
         6 => &[4],
@@ -56,7 +56,7 @@ fn implicit_hydrogens(
     let mut bonds: u8 = 0;
     let mut aromatic = aromatic;
     for edge in molecule.graph.edges(node) {
-        bonds += match edge.weight().order {
+        let order = match edge.weight().order {
             BondOrder::Single => 1,
             BondOrder::Double => 2,
             BondOrder::Triple => 3,
@@ -65,17 +65,22 @@ fn implicit_hydrogens(
                 1
             }
         };
+        bonds = bonds
+            .checked_add(order)
+            .ok_or_else(|| ErrMode::Cut(ContextError::new()))?;
     }
     // an aromatic atom also spends one electron on the ring, and keeps its lowest
     // valence: the s in thiophene has no hydrogen
     if aromatic {
-        bonds += 1;
+        bonds = bonds
+            .checked_add(1)
+            .ok_or_else(|| ErrMode::Cut(ContextError::new()))?;
         valences = &valences[..valences.len().min(1)];
     }
-    valences
+    Ok(valences
         .iter()
         .find(|&&valence| valence >= bonds)
-        .map_or(0, |valence| valence - bonds)
+        .map_or(0, |valence| valence - bonds))
 }
 
 /// Adds the bonds, giving each one with no symbol its order: aromatic between two
@@ -145,8 +150,14 @@ fn parse_molecule_next(input: &mut &str) -> ModalResult<Molecule> {
     let mut prev_node = NodeIndex::end();
     let mut prev_bond = None;
     let mut after_dot = false;
+    let mut after_open = false;
 
     for token in tokens {
+        // a branch must hold something: "C()C" is not a molecule
+        if after_open && !matches!(token, Token::Atom(..) | Token::Bond(_) | Token::Dot) {
+            return Err(ErrMode::Cut(ContextError::new()));
+        }
+        after_open = matches!(token, Token::Open);
         // a '.' must stand between two atoms: "CC.", ".CC" and "C..O" are truncated or
         // broken records, not molecules
         if after_dot && !matches!(token, Token::Atom(..)) {
@@ -158,6 +169,10 @@ fn parse_molecule_next(input: &mut &str) -> ModalResult<Molecule> {
             return Err(ErrMode::Cut(ContextError::new()));
         }
         match token {
+            // "=C", "C.=C", ".C" and "(C)C" have no atom before the bond, dot or branch
+            Token::Bond(_) | Token::Dot | Token::Open if prev_node == NodeIndex::end() => {
+                return Err(ErrMode::Cut(ContextError::new()));
+            }
             Token::Open => stack.push(prev_node),
             Token::Close => {
                 let Some(node) = stack.pop() else {
@@ -203,10 +218,6 @@ fn parse_molecule_next(input: &mut &str) -> ModalResult<Molecule> {
                 prev_bond = None;
                 after_dot = false;
             }
-            // "=C", "C.=C" and ".C" have no atom before the bond or dot
-            Token::Bond(_) | Token::Dot if prev_node == NodeIndex::end() => {
-                return Err(ErrMode::Cut(ContextError::new()));
-            }
             Token::Bond(order) => prev_bond = Some(order),
             // the next atom starts a new, unbonded component
             Token::Dot => {
@@ -223,7 +234,7 @@ fn parse_molecule_next(input: &mut &str) -> ModalResult<Molecule> {
     add_bonds(&mut molecule, pending_bonds);
 
     for (node, atomic_number, aromatic) in organic_nodes {
-        let hs = implicit_hydrogens(&molecule, node, atomic_number, aromatic);
+        let hs = implicit_hydrogens(&molecule, node, atomic_number, aromatic)?;
         if let Some(atom) = molecule.graph.node_weight_mut(node) {
             atom.implicit_hs = hs;
         }
@@ -678,6 +689,42 @@ mod tests {
             assert!(parse_molecule(smiles).is_err(), "{smiles}");
         }
         assert!(parse_molecule("C(.C)C").is_ok());
+    }
+
+    #[test]
+    fn parse_rejects_bad_branches() {
+        // "(C)C" used to give two unbonded carbons, "C()C" ethane
+        for smiles in ["(C)C", "C()C", "C(1)C", "C(C)()C"] {
+            assert!(parse_molecule(smiles).is_err(), "{smiles}");
+        }
+        for smiles in ["C(C)C", "C(=O)O", "C(C)(C)C", "C(.C)C"] {
+            assert!(parse_molecule(smiles).is_ok(), "{smiles}");
+        }
+    }
+
+    #[test]
+    fn parse_rejects_bond_order_overflow() {
+        // Only the arithmetic limit is enforced, not chemical valence.
+        for (atom, branch, limit) in [
+            ("C", "(C)", 255),
+            ("C", "(=C)", 127),
+            ("C", "(#C)", 85),
+            ("c", "(C)", 254),
+        ] {
+            let smiles = format!("{atom}{}", branch.repeat(limit));
+            assert!(
+                parse_molecule(&smiles).is_ok(),
+                "{atom} with {limit} {branch}"
+            );
+            let smiles = format!("{smiles}{branch}");
+            assert!(
+                parse_molecule(&smiles).is_err(),
+                "{atom} with {} {branch}",
+                limit + 1
+            );
+        }
+        let smiles = format!("C{}", "(C)".repeat(300));
+        assert!(parse_molecule(&smiles).is_err());
     }
 
     #[test]
