@@ -56,6 +56,10 @@ fn parse_molecule_next(input: &mut &str) -> ModalResult<Molecule> {
                 prev_bond = bond;
             }
         } else if let Some(digit) = cycle_digit {
+            // a ring bond needs an atom to start from or end at
+            if prev_node == NodeIndex::end() {
+                return Err(ErrMode::Cut(ContextError::new()));
+            }
             if let Some(open_node) = open_cycles.remove(&digit) {
                 pending_bonds.push((prev_node, open_node, Bond { order: prev_bond }));
                 prev_bond = BondOrder::Single;
@@ -435,6 +439,13 @@ mod tests {
     #[test]
     fn parse_molecule_c1cc() {
         assert!(parse_molecule("C1CC").is_err())
+    }
+
+    #[test]
+    fn parse_molecule_ring_digit_without_atom() {
+        // used to panic in add_edge on the placeholder node
+        assert!(parse_molecule("1C1").is_err());
+        assert!(parse_molecule("(C)1C1").is_err());
     }
 
     #[test]
