@@ -8,9 +8,9 @@ use std::collections::{HashMap, HashSet, VecDeque};
 impl Molecule {
     /// Marks every ring that obeys Hückel's rule (4n+2 π electrons) as aromatic: its
     /// atoms aromatic, its bonds `Aromatic`. A ring written in lowercase, or with `:`
-    /// bonds, is taken as aromatic as written. Any other `Aromatic` bond becomes single.
-    /// Afterwards a molecule has the same atoms and bonds whether it was written in
-    /// Kekulé form ("C1=CC=CC=C1") or aromatic form ("c1ccccc1").
+    /// bonds, that fails the rule is still taken as aromatic, as written. Any other
+    /// `Aromatic` bond becomes single. Afterwards a molecule has the same atoms and bonds
+    /// whether it was written in Kekulé form ("C1=CC=CC=C1") or aromatic form ("c1ccccc1").
     pub fn perceive_aromaticity(&mut self) {
         let rings = self.rings();
         let ring_bonds: HashSet<EdgeIndex> = rings
@@ -18,38 +18,50 @@ impl Molecule {
             .flat_map(|ring| self.ring_edges(ring))
             .collect();
 
-        let mut aromatic: Vec<bool> = rings
+        // aromatic by itself, so all its bonds are aromatic
+        let mut alone: Vec<bool> = rings
             .iter()
-            .map(|ring| self.is_aromatic(ring, &ring_bonds))
+            .map(|ring| self.huckel(ring.iter().copied(), &ring_bonds))
             .collect();
-        // fused pairs such as azulene (5 + 7 atoms) are aromatic only as a whole
+        let mut aromatic = alone.clone();
+        // fused pairs such as azulene (5 + 7 atoms) are aromatic only around the
+        // outside; the bond they share stays single, as in RDKit (it is 1.50 Å long)
+        let mut shared_bonds: HashSet<EdgeIndex> = HashSet::new();
         for i in 0..rings.len() {
             for j in i + 1..rings.len() {
                 if aromatic[i] || aromatic[j] {
                     continue;
                 }
-                let shared = rings[i]
+                let shared: Vec<NodeIndex> = rings[i]
                     .iter()
                     .filter(|node| rings[j].contains(node))
-                    .count();
-                if shared == 2 {
-                    let union: HashSet<NodeIndex> =
-                        rings[i].iter().chain(&rings[j]).copied().collect();
-                    if self.huckel(union.into_iter(), &ring_bonds) {
-                        aromatic[i] = true;
-                        aromatic[j] = true;
-                    }
+                    .copied()
+                    .collect();
+                let [a, b] = shared[..] else {
+                    continue;
+                };
+                let union: HashSet<NodeIndex> = rings[i].iter().chain(&rings[j]).copied().collect();
+                if self.huckel(union.into_iter(), &ring_bonds) {
+                    aromatic[i] = true;
+                    aromatic[j] = true;
+                    shared_bonds
+                        .extend(self.graph.find_edge_undirected(a, b).map(|(edge, _)| edge));
                 }
+            }
+        }
+        for (i, ring) in rings.iter().enumerate() {
+            if !aromatic[i] && self.written_aromatic(ring) {
+                aromatic[i] = true;
+                alone[i] = true;
             }
         }
 
         let mut aromatic_bonds: HashSet<EdgeIndex> = HashSet::new();
-        for (ring, _) in rings
-            .iter()
-            .zip(&aromatic)
-            .filter(|(_, &aromatic)| aromatic)
-        {
-            aromatic_bonds.extend(self.ring_edges(ring));
+        for (i, ring) in rings.iter().enumerate().filter(|&(i, _)| aromatic[i]) {
+            aromatic_bonds.extend(
+                self.ring_edges(ring)
+                    .filter(|edge| alone[i] || !shared_bonds.contains(edge)),
+            );
             for &node in ring {
                 if let Some(atom) = self.graph.node_weight_mut(node) {
                     atom.aromatic = true;
@@ -68,12 +80,11 @@ impl Molecule {
         }
     }
 
-    fn is_aromatic(&self, ring: &[NodeIndex], ring_bonds: &HashSet<EdgeIndex>) -> bool {
-        let written_aromatic = ring.iter().all(|&node| self.graph[node].aromatic)
+    fn written_aromatic(&self, ring: &[NodeIndex]) -> bool {
+        ring.iter().all(|&node| self.graph[node].aromatic)
             || self
                 .ring_edges(ring)
-                .all(|edge| self.graph[edge].order == BondOrder::Aromatic);
-        written_aromatic || self.huckel(ring.iter().copied(), ring_bonds)
+                .all(|edge| self.graph[edge].order == BondOrder::Aromatic)
     }
 
     /// Whether these atoms hold 4n+2 π electrons, each of them giving some.
@@ -97,15 +108,17 @@ impl Molecule {
     fn pi_electrons(&self, node: NodeIndex, ring_bonds: &HashSet<EdgeIndex>) -> Option<u32> {
         let atom = &self.graph[node];
         let mut ring_double = false;
+        let mut ring_aromatic = false;
         let mut exocyclic_double = None;
         for edge in self.graph.edges(node) {
+            let in_ring = ring_bonds.contains(&edge.id());
             match edge.weight().order {
-                BondOrder::Single => {}
                 BondOrder::Triple => return None,
-                BondOrder::Double | BondOrder::Aromatic if ring_bonds.contains(&edge.id()) => {
-                    ring_double = true;
-                }
-                BondOrder::Double | BondOrder::Aromatic => {
+                BondOrder::Double if in_ring => ring_double = true,
+                BondOrder::Aromatic if in_ring => ring_aromatic = true,
+                // an aromatic bond outside rings, like biphenyl's link, ends up single
+                BondOrder::Single | BondOrder::Aromatic => {}
+                BondOrder::Double => {
                     let other = if edge.source() == node {
                         edge.target()
                     } else {
@@ -134,6 +147,8 @@ impl Molecule {
             // the cyclopentadienyl anion, and an empty p orbital: tropylium, boron
             (6, -1) => Some(2),
             (6, 1) | (5, 0) => Some(0),
+            // an atom written aromatic with no lone pair to give: pyridine's n, any c
+            _ if ring_aromatic => Some(1),
             _ => None,
         }
     }
@@ -263,6 +278,32 @@ mod tests {
             .filter(|bond| bond.order == BondOrder::Single)
             .count();
         assert_eq!(single, 1);
+    }
+
+    #[test]
+    fn test_azulene_shared_bond_stays_single() {
+        for smiles in ["C1=CC2=CC=CC=CC2=C1", "c1ccc2cccc2cc1", "c1ccc2cccc-2cc1"] {
+            let m = parse_molecule(smiles).unwrap().1;
+            let count = |order| {
+                m.graph
+                    .edge_weights()
+                    .filter(|bond| bond.order == order)
+                    .count()
+            };
+            // ten aromatic bonds around the outside, the one across the middle single
+            assert_eq!(
+                (count(BondOrder::Aromatic), count(BondOrder::Single)),
+                (10, 1),
+                "{smiles}"
+            );
+            assert!(m.graph.node_weights().all(|atom| atom.aromatic), "{smiles}");
+        }
+        // naphthalene's rings are aromatic alone, so its shared bond is aromatic
+        let m = parse_molecule("C1=CC=C2C=CC=CC2=C1").unwrap().1;
+        assert!(m
+            .graph
+            .edge_weights()
+            .all(|bond| bond.order == BondOrder::Aromatic));
     }
 
     #[test]
