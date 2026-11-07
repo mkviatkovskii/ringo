@@ -16,19 +16,16 @@ impl Fingerprint {
             "unexpected fingerprint size"
         );
         let mut bytes = [0u8; FINGERPRINT_BYTES];
-        for (chunk, block) in bytes
-            .chunks_exact_mut(size_of::<Block>())
-            .zip(self.0.as_slice())
-        {
-            chunk.copy_from_slice(&block.to_le_bytes());
+        let (chunks, _) = bytes.as_chunks_mut::<{ size_of::<Block>() }>();
+        for (chunk, block) in chunks.iter_mut().zip(self.0.as_slice()) {
+            *chunk = block.to_le_bytes();
         }
         bytes
     }
 
     pub fn from_bytes(bytes: &[u8; FINGERPRINT_BYTES]) -> Fingerprint {
-        let blocks = bytes
-            .chunks_exact(size_of::<Block>())
-            .map(|chunk| Block::from_le_bytes(chunk.try_into().unwrap()));
+        let (chunks, _) = bytes.as_chunks::<{ size_of::<Block>() }>();
+        let blocks = chunks.iter().map(|chunk| Block::from_le_bytes(*chunk));
         Fingerprint(FixedBitSet::with_capacity_and_blocks(
             FINGERPRINT_SIZE,
             blocks,
