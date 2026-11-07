@@ -86,7 +86,7 @@ pub(crate) mod test {
     /// Copies the sample `molecules.smi` into `dir` and returns the copy's path,
     /// so tests never write index files into the repository.
     pub(crate) fn copy_sample_molecules(dir: &Path) -> PathBuf {
-        let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("molecules.smi");
+        let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data/molecules.smi");
         let target = dir.join("molecules.smi");
         std::fs::copy(source, &target).unwrap();
         target
