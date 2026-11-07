@@ -824,14 +824,4 @@ mod tests {
         // aromatic bonds spend an extra electron
         assert_eq!(hs("C1:C:C:C:C:C1"), [1, 1, 1, 1, 1, 1]);
     }
-
-    #[test]
-    fn ecfp() {
-        for smiles in ["C", "CC", "C1COCNC1", "CN1C=NC2=C1C(=O)N(C(=O)N2C)C"] {
-            println!("{smiles}: ");
-            let m = parse_molecule(smiles).unwrap().1;
-            let result = m.ecfp(2, 512);
-            println!("{result:?}");
-        }
-    }
 }

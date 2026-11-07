@@ -41,7 +41,7 @@ pub fn similarity_search(
     let fis = File::open(smiles_file).map_err(with_path(smiles_file))?;
     let mut reader = BufReader::new(fis);
 
-    //fingerprings file
+    // fingerprints file
     let fp_path = smiles_file.to_owned() + ".fp";
     let fif = File::open(&fp_path).map_err(with_path(&fp_path))?;
     let file_len = fif.metadata().map_err(with_path(&fp_path))?.len();
@@ -97,7 +97,6 @@ pub fn similarity_search(
 
         // calculate similarity
         let similarity = tanimoto_bitset(&index_item.fingerprint.0, &query_fp.0);
-        // print similarity if it is greater than min_similarity
         if (min_similarity..=max_similarity).contains(&similarity) {
             hits.push((similarity, index_item.position));
             if mode == SearchMode::First && hits.len() >= limit {
@@ -121,7 +120,6 @@ pub fn similarity_search(
             reader
                 .read_line(&mut line)
                 .map_err(with_path(smiles_file))?;
-            // println!("{i} {similarity} {position} {line}");
             Ok(SearchResult { line, similarity })
         })
         .collect()

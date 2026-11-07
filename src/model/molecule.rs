@@ -3,26 +3,18 @@ use crate::model::bond::Bond;
 use petgraph::stable_graph::{EdgeIndex, NodeIndex, StableGraph};
 use petgraph::visit::EdgeRef;
 use petgraph::Undirected;
-use std::borrow::Borrow;
 use std::collections::BTreeSet;
 
+#[derive(Default)]
 pub struct Molecule {
     // crate-only: the reader computes implicit hydrogens once, so outside edits would leave
     // them stale
     pub(crate) graph: StableGraph<Atom, Bond, Undirected>,
 }
 
-impl Default for Molecule {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl Molecule {
     pub fn new() -> Molecule {
-        Molecule {
-            graph: StableGraph::default(),
-        }
+        Self::default()
     }
 
     pub(crate) fn add_atom(&mut self, atom: Atom) -> NodeIndex {
@@ -64,23 +56,10 @@ impl Molecule {
     }
 
     pub fn get_bonds_for_atom(&self, atom: NodeIndex) -> Vec<EdgeIndex> {
-        let mut bonds: Vec<EdgeIndex> = Vec::new();
-        for edge in self.graph.edges(atom) {
-            bonds.push(EdgeIndex::new(edge.id().index()));
-        }
-        bonds
+        self.graph.edges(atom).map(|edge| edge.id()).collect()
     }
 
     pub fn get_neighbors_for_atom(&self, atom: NodeIndex) -> BTreeSet<NodeIndex> {
-        let mut atoms: BTreeSet<NodeIndex> = BTreeSet::new();
-        for edge in self.graph.edges(atom) {
-            atoms.insert(NodeIndex::new(edge.source().index()));
-            atoms.insert(NodeIndex::new(edge.target().index()));
-        }
-        atoms.remove(atom.borrow());
-        atoms
+        self.graph.neighbors(atom).collect()
     }
 }
-
-#[cfg(test)]
-mod test {}
