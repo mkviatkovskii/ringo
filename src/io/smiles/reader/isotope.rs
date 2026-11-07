@@ -3,8 +3,9 @@ use winnow::prelude::*;
 
 /// Parses isotope value, that should be a number
 /// Returns the isotope value
-pub fn parse_isotope(input: &mut &str) -> ModalResult<u8> {
-    digit1.try_map(str::parse::<u8>).parse_next(input)
+/// A u16, since mass numbers go past 255 (`[238U]`).
+pub fn parse_isotope(input: &mut &str) -> ModalResult<u16> {
+    digit1.try_map(str::parse::<u16>).parse_next(input)
 }
 
 #[cfg(test)]

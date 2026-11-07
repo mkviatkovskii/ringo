@@ -33,7 +33,8 @@ impl Molecule {
             let id = fnv1a([
                 u64::from(atom.element.atomic_number),
                 graph.edges(node).count() as u64,
-                u64::from(atom.hs),
+                // every hydrogen, written or implicit, so an acid's =O and -OH differ at radius 0
+                u64::from(atom.hs) + u64::from(atom.implicit_hs),
                 // sign-extend, so a negative charge keeps the bits it had with `as u64`
                 i64::from(atom.charge).cast_unsigned(),
                 u64::from(atom.isotope),
@@ -145,7 +146,7 @@ mod test {
         let ibuprofen = ecfp("CC(C)CC1=CC=C(C=C1)C(C)C(=O)O", 2, 512);
         let naproxen = ecfp("CC(C1=CC2=C(C=C1)C=C(C=C2)OC)C(=O)O", 2, 512);
         let sim = tanimoto_bitset(&ibuprofen.0, &naproxen.0);
-        assert!(0.40 < sim && sim < 0.42);
+        assert!(0.42 < sim && sim < 0.43, "{sim}");
     }
 
     #[test]
@@ -163,6 +164,8 @@ mod test {
             ("CC(C)O", "OC(C)C"),
             ("CC(=O)O", "OC(C)=O"),
             ("C1CCOC1", "O1CCCC1"),
+            ("c1ccncc1", "n1ccccc1"),
+            ("Cc1ccccc1", "c1ccc(C)cc1"),
         ] {
             assert_eq!(ones(&ecfp(a, 2, 512)), ones(&ecfp(b, 2, 512)), "{a} {b}");
         }
@@ -185,7 +188,14 @@ mod test {
         assert_eq!(fnv1a([]), 0xcbf2_9ce4_8422_2325);
         assert_eq!(
             ones(&ecfp("CC(=O)O", 2, 512)),
-            [120, 169, 186, 248, 353, 390, 486]
+            [102, 119, 120, 169, 174, 397, 428, 486]
         );
+    }
+
+    #[test]
+    fn test_ecfp_counts_implicit_hydrogens() {
+        // the =O and -OH oxygens of acetic acid used to look the same at radius 0
+        assert_eq!(ecfp("CC(=O)O", 0, 512).0.count_ones(..), 4);
+        assert_ne!(ones(&ecfp("CC=O", 2, 512)), ones(&ecfp("CCO", 2, 512)));
     }
 }

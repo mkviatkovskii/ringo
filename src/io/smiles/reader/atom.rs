@@ -1,5 +1,5 @@
 use crate::io::smiles::reader::charge::parse_charge;
-use crate::io::smiles::reader::element::parse_element;
+use crate::io::smiles::reader::element::{parse_bracket_element, parse_organic_element};
 use crate::io::smiles::reader::hydrogens::parse_hydrogens;
 use crate::io::smiles::reader::isotope::parse_isotope;
 use crate::model::atom::Atom;
@@ -8,14 +8,19 @@ use winnow::combinator::{cut_err, opt};
 use winnow::prelude::*;
 
 pub fn parse_atom(input: &mut &str) -> ModalResult<Atom> {
-    let mut isotope: Option<u8> = None;
+    let mut isotope: Option<u16> = None;
     let mut charge: Option<i8> = None;
     let mut hs: Option<u8> = None;
     let bracket = opt('[').parse_next(input)?.is_some();
     if bracket {
         isotope = opt(parse_isotope).parse_next(input)?;
     }
-    let atomic_number = parse_element(input)?;
+    let (atomic_number, aromatic) = if bracket {
+        // after "[", anything but an element is a hard error
+        cut_err(parse_bracket_element).parse_next(input)?
+    } else {
+        parse_organic_element(input)?
+    };
     if bracket {
         hs = opt(parse_hydrogens).parse_next(input)?;
         charge = opt(parse_charge).parse_next(input)?;
@@ -29,6 +34,7 @@ pub fn parse_atom(input: &mut &str) -> ModalResult<Atom> {
         charge: charge.unwrap_or(0),
         hs: hs.unwrap_or(0),
         implicit_hs: 0,
+        aromatic,
     })
 }
 
@@ -37,7 +43,7 @@ mod tests {
     use crate::io::smiles::reader::atom::parse_atom;
     use winnow::Parser;
 
-    fn do_test_parse_atom(input: &str, atomic_number: u8, charge: i8, hs: u8, isotope: u8) {
+    fn do_test_parse_atom(input: &str, atomic_number: u8, charge: i8, hs: u8, isotope: u16) {
         let (remaining_input, atom) = parse_atom.parse_peek(input).unwrap();
         assert_eq!(atom.element.atomic_number, atomic_number);
         assert_eq!(atom.isotope, isotope);

@@ -6,7 +6,8 @@ pub struct Element {
 impl Element {
     #[expect(
         clippy::unreadable_literal,
-        reason = "weights are written as in the IUPAC table"
+        clippy::too_many_lines,
+        reason = "a table of weights, written as in the IUPAC table"
     )]
     pub fn atomic_weight(&self) -> f64 {
         match self.atomic_number {
@@ -93,10 +94,65 @@ impl Element {
             81 => 204.38,
             82 => 207.2,
             83 => 208.98040,
+            // no stable isotope: mass number of the longest-lived one, as for Tc and Pm
+            84 => 209.0,
+            85 => 210.0,
+            86 => 222.0,
+            87 => 223.0,
+            88 => 226.0,
+            89 => 227.0,
+            90 => 232.0377,
+            91 => 231.03588,
+            92 => 238.02891,
+            93 => 237.0,
+            94 => 244.0,
+            95 => 243.0,
+            96 | 97 => 247.0,
+            98 => 251.0,
+            99 => 252.0,
+            100 => 257.0,
+            101 => 258.0,
+            102 => 259.0,
+            103 => 266.0,
+            104 => 267.0,
+            105 => 268.0,
+            106 | 108 => 269.0,
+            107 => 270.0,
+            109 => 278.0,
+            110 => 281.0,
+            111 => 282.0,
+            112 => 285.0,
+            113 => 286.0,
+            114 => 289.0,
+            115 => 290.0,
+            116 => 293.0,
+            117 | 118 => 294.0,
+            // the `*` wildcard atom
+            0 => 0.0,
             _ => panic!("Unsupported atomic number {}", self.atomic_number),
         }
     }
+
+    /// The element for a symbol such as "C" or "Cl"; "*" is the wildcard, atomic number 0.
+    pub fn from_symbol(symbol: &str) -> Option<Element> {
+        let index = SYMBOLS.iter().position(|&s| s == symbol)?;
+        u8::try_from(index)
+            .ok()
+            .map(|atomic_number| Element { atomic_number })
+    }
 }
+
+/// Element symbols by atomic number; index 0 is the wildcard.
+const SYMBOLS: [&str; 119] = [
+    "*", "H", "He", "Li", "Be", "B", "C", "N", "O", "F", "Ne", "Na", "Mg", "Al", "Si", "P", "S",
+    "Cl", "Ar", "K", "Ca", "Sc", "Ti", "V", "Cr", "Mn", "Fe", "Co", "Ni", "Cu", "Zn", "Ga", "Ge",
+    "As", "Se", "Br", "Kr", "Rb", "Sr", "Y", "Zr", "Nb", "Mo", "Tc", "Ru", "Rh", "Pd", "Ag", "Cd",
+    "In", "Sn", "Sb", "Te", "I", "Xe", "Cs", "Ba", "La", "Ce", "Pr", "Nd", "Pm", "Sm", "Eu", "Gd",
+    "Tb", "Dy", "Ho", "Er", "Tm", "Yb", "Lu", "Hf", "Ta", "W", "Re", "Os", "Ir", "Pt", "Au", "Hg",
+    "Tl", "Pb", "Bi", "Po", "At", "Rn", "Fr", "Ra", "Ac", "Th", "Pa", "U", "Np", "Pu", "Am", "Cm",
+    "Bk", "Cf", "Es", "Fm", "Md", "No", "Lr", "Rf", "Db", "Sg", "Bh", "Hs", "Mt", "Ds", "Rg", "Cn",
+    "Nh", "Fl", "Mc", "Lv", "Ts", "Og",
+];
 
 #[cfg(test)]
 mod test {
@@ -106,5 +162,23 @@ mod test {
     fn test_element() {
         let element = Element { atomic_number: 1 };
         assert_eq!(element.atomic_weight(), 1.008);
+    }
+
+    #[test]
+    fn test_every_element_has_a_symbol_and_weight() {
+        for (symbol, atomic_number) in [("*", 0), ("C", 6), ("Cl", 17), ("U", 92), ("Og", 118)] {
+            assert_eq!(
+                Element::from_symbol(symbol),
+                Some(Element { atomic_number }),
+                "{symbol}"
+            );
+        }
+        assert_eq!(Element::from_symbol("Xx"), None);
+        assert_eq!(Element::from_symbol("c"), None);
+        // used to panic above bismuth (83)
+        for atomic_number in 0..=118 {
+            let weight = Element { atomic_number }.atomic_weight();
+            assert!(atomic_number == 0 || weight > 1.0, "{atomic_number}");
+        }
     }
 }

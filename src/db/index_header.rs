@@ -1,5 +1,6 @@
 const MAGIC: [u8; 8] = *b"RINGOFP\0";
-const VERSION: u16 = 2;
+// 3: fingerprints count implicit hydrogens and read aromatic SMILES
+const VERSION: u16 = 3;
 
 /// A multiple of 8, so the records after it stay 8-byte aligned.
 pub const INDEX_HEADER_SIZE: usize = 32;
