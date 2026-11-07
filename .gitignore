@@ -1,3 +1,6 @@
 /.idea
 /target
 *.fp
+/tests/data/*.gz
+/tests/data/chebi_*.smi
+/tests/data/chembl_*.smi

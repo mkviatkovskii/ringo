@@ -18,43 +18,46 @@ impl IndexItem {
         bytes.extend(self.fingerprint.to_bytes());
         bytes
     }
+}
 
-    pub fn from_bytes(bytes: &[u8]) -> io::Result<IndexItem> {
-        let invalid = |msg: &str| io::Error::new(io::ErrorKind::InvalidData, msg);
-        let (position, fingerprint) = bytes
-            .split_first_chunk::<8>()
-            .ok_or_else(|| invalid("index record is too short"))?;
-        Ok(IndexItem {
-            position: usize::try_from(u64::from_le_bytes(*position))
-                .map_err(|_| invalid("offset does not fit in usize"))?,
-            fingerprint: Fingerprint::from_bytes(fingerprint),
-        })
-    }
+/// Splits a record into its line offset and fingerprint bytes, without copying them.
+pub fn split_record(bytes: &[u8]) -> io::Result<(usize, &[u8])> {
+    let invalid = |msg: &str| io::Error::new(io::ErrorKind::InvalidData, msg);
+    let (position, fingerprint) = bytes
+        .split_first_chunk::<8>()
+        .ok_or_else(|| invalid("index record is too short"))?;
+    let position = usize::try_from(u64::from_le_bytes(*position))
+        .map_err(|_| invalid("offset does not fit in usize"))?;
+    Ok((position, fingerprint))
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::db::index_item::{index_item_size, IndexItem};
+    use crate::db::index_item::{index_item_size, split_record, IndexItem};
     use crate::model::fingerprint::Fingerprint;
     use fixedbitset::FixedBitSet;
 
     #[test]
     fn test_index_item_encode_decode() {
-        let fp = Fingerprint(FixedBitSet::with_capacity(512));
-        let mut ii = IndexItem {
+        let mut fp = FixedBitSet::with_capacity(512);
+        fp.insert(1);
+        fp.insert(17);
+        let ii = IndexItem {
             position: 0,
-            fingerprint: fp,
+            fingerprint: Fingerprint(fp),
         };
-        ii.position = 0;
-        ii.fingerprint.0.set(1, true);
-        ii.fingerprint.0.set(17, true);
 
-        let decoded = IndexItem::from_bytes(&ii.to_bytes()).unwrap();
-        assert_eq!(decoded.position, 0);
+        let bytes = ii.to_bytes();
+        let (position, fingerprint) = split_record(&bytes).unwrap();
+        assert_eq!(position, 0);
         assert_eq!(
-            decoded.fingerprint.0.ones().collect::<Vec<usize>>(),
+            Fingerprint::from_bytes(fingerprint)
+                .0
+                .ones()
+                .collect::<Vec<usize>>(),
             vec![1, 17]
         );
+        assert!(split_record(&bytes[..7]).is_err());
     }
 
     #[test]
@@ -70,8 +73,8 @@ mod tests {
         assert_eq!(bytes.len(), index_item_size(512));
         assert_eq!(index_item_size(512), 72);
 
-        let decoded = IndexItem::from_bytes(&bytes).unwrap();
-        assert_eq!(decoded.position, u32::MAX as usize);
-        assert_eq!(decoded.fingerprint.0.count_ones(..), 512);
+        let (position, fingerprint) = split_record(&bytes).unwrap();
+        assert_eq!(position, u32::MAX as usize);
+        assert_eq!(Fingerprint::from_bytes(fingerprint).0.count_ones(..), 512);
     }
 }

@@ -1,0 +1,4 @@
+# AVX2 popcount makes search's Tanimoto loop several times shorter. Builds then need an x86 CPU
+# from 2013 on (Intel Haswell, AMD Excavator); RUSTFLAGS="-C target-cpu=x86-64" overrides this.
+[target.'cfg(target_arch = "x86_64")']
+rustflags = ["-C", "target-cpu=x86-64-v3"]
