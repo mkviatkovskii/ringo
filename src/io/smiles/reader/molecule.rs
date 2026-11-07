@@ -1,35 +1,43 @@
 use crate::io::smiles::reader::atom::parse_atom;
 use crate::io::smiles::reader::bond::parse_bond;
+use crate::model::atom::Atom;
 use crate::model::bond::{Bond, BondOrder};
 use crate::model::molecule::Molecule;
-use nom::branch::alt;
-use nom::character::complete::{char, digit1};
-use nom::combinator::{map, map_res};
-use nom::error::ErrorKind;
-use nom::multi::many0;
-use nom::{IResult, Parser};
 use petgraph::stable_graph::NodeIndex;
 use std::collections::HashMap;
+use winnow::ascii::digit1;
+use winnow::combinator::{alt, repeat};
+use winnow::error::{ContextError, ErrMode};
+use winnow::prelude::*;
 
-fn parse_cycle_digit(input: &str) -> IResult<&str, u8> {
-    map_res(digit1, str::parse::<u8>).parse(input)
+type Token = (Option<Atom>, Option<Bond>, Option<u8>, Option<bool>);
+
+fn parse_cycle_digit(input: &mut &str) -> ModalResult<u8> {
+    digit1.try_map(str::parse::<u8>).parse_next(input)
 }
 
-pub fn parse_molecule(input: &str) -> IResult<&str, Molecule> {
+/// Parses a molecule from the start of `input`; returns the unparsed rest and the molecule.
+pub fn parse_molecule(input: &str) -> ModalResult<(&str, Molecule)> {
+    parse_molecule_next.parse_peek(input)
+}
+
+fn parse_molecule_next(input: &mut &str) -> ModalResult<Molecule> {
     let mut molecule = Molecule::new();
     let mut open_cycles: HashMap<u8, NodeIndex> = HashMap::new();
     let mut stack: Vec<(NodeIndex, BondOrder)> = Vec::new();
     let mut pending_bonds: Vec<(NodeIndex, NodeIndex, Bond)> = Vec::new();
 
-    let mut parse_atoms_and_bonds = many0(alt((
-        map(parse_atom, |atom| (Some(atom), None, None, None)),
-        map(parse_bond, |bond| (None, Some(bond), None, None)),
-        map(parse_cycle_digit, |digit| (None, None, Some(digit), None)),
-        map(char('('), |_| (None, None, None, Some(true))),
-        map(char(')'), |_| (None, None, None, Some(false))),
-    )));
-
-    let (input, atoms_and_bonds) = parse_atoms_and_bonds.parse(input)?;
+    let atoms_and_bonds: Vec<Token> = repeat(
+        0..,
+        alt((
+            parse_atom.map(|atom| (Some(atom), None, None, None)),
+            parse_bond.map(|bond| (None, Some(bond), None, None)),
+            parse_cycle_digit.map(|digit| (None, None, Some(digit), None)),
+            '('.map(|_| (None, None, None, Some(true))),
+            ')'.map(|_| (None, None, None, Some(false))),
+        )),
+    )
+    .parse_next(input)?;
 
     let mut prev_node = NodeIndex::end();
     let mut prev_bond = BondOrder::Single;
@@ -40,10 +48,7 @@ pub fn parse_molecule(input: &str) -> IResult<&str, Molecule> {
                 stack.push((prev_node, prev_bond));
             } else {
                 if stack.is_empty() {
-                    return Err(nom::Err::Failure(nom::error::Error::new(
-                        input,
-                        ErrorKind::Verify,
-                    )));
+                    return Err(ErrMode::Cut(ContextError::new()));
                 }
 
                 let (node, bond) = stack.pop().unwrap();
@@ -75,17 +80,14 @@ pub fn parse_molecule(input: &str) -> IResult<&str, Molecule> {
     }
 
     if !open_cycles.is_empty() || !stack.is_empty() {
-        return Err(nom::Err::Failure(nom::error::Error::new(
-            input,
-            ErrorKind::Verify,
-        )));
+        return Err(ErrMode::Cut(ContextError::new()));
     }
 
     for (node1, node2, bond) in pending_bonds {
         molecule.add_bond(node1, node2, bond);
     }
 
-    Ok((input, molecule))
+    Ok(molecule)
 }
 
 #[cfg(test)]

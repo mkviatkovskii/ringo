@@ -12,8 +12,8 @@ version = "0.1.0"
 
 [dependencies]
 fixedbitset = "0.5.7"
-nom = "8.0.0"
 petgraph = "0.8.3"
+winnow = "1.0.5"
 
 [lib]
 name = "ringo"
