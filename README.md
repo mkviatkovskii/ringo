@@ -51,8 +51,13 @@ The index stores its fingerprint radius and bit count; queries use those same
 parameters. Radius 2 corresponds to ECFP4.
 
 Search includes scores between the minimum and maximum, inclusive. The default
-`best` mode returns the most similar records first, up to the limit. `first`
-returns the first matching records in file order and stops once it reaches the limit.
+`best` mode returns the most similar records first, up to the limit; equal scores
+keep file order. `first` returns the first matching records in index order and stops
+once it reaches the limit.
+
+The index groups records by the number of fingerprint bits set, in file order within
+a group, and search reads only the groups that can reach the minimum score. Indexing needs free disk space for about twice the
+size of the index while it runs.
 
 ## SMILES support and limits
 
