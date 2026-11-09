@@ -374,7 +374,7 @@ fn finish_molecule(
             Chirality::OH(_) => 6,
             _ => ligands.len(),
         };
-        // SMILES missing coordination sites occupy the implicit-H position (RDKit convention).
+        // Missing coordination sites occupy the implicit-H position in Ringo's supported extension.
         while ligands.len() < coordination {
             ligands.insert(usize::from(has_previous), Ligand::Vacancy);
         }

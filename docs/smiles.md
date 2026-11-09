@@ -49,10 +49,12 @@ separate codes for donor and acceptor ends. Equivalent reversed spellings, such 
 
 `Molecule::atom_stereo()`, `Molecule::allene_stereo()` and `Molecule::double_bond_stereo()` expose the
 preserved configurations. Atom configurations refer to recorded SMILES ligand order,
-not CIP R/S labels. SP/TB/OH permutation numbers retain their SMILES meaning; missing
-coordination sites occupy the implicit-hydrogen position, following the RDKit SMILES
-convention. Supported three-neighbour N/P/S/As/Se tetrahedral configurations use a
-virtual lone-pair site in that position, following the Open Babel convention.
+not CIP R/S labels. SP/TB/OH permutation numbers follow
+[OpenSMILES stereochemistry](https://opensmiles.org/opensmiles.html#_stereochemistry).
+Ringo additionally supports missing coordination sites at the implicit-hydrogen
+position, and virtual lone-pair sites at that position for three-neighbour
+N/P/S/As/Se tetrahedral configurations. These are extensions beyond the standard's
+explicit stereo rules.
 
 Square-planar tags preserve the four SMILES-ordered ligand sites and the
 [OpenSMILES U, 4 and Z permutations](https://opensmiles.org/opensmiles.html#_square_planar_centers).
@@ -62,8 +64,7 @@ Repeated ligands and dative bonds are supported: `Cl[Pt@SP1](Cl)(<-[NH3])<-[NH3]
 describes cisplatin, while `Cl[Pt@SP2](Cl)(<-[NH3])<-[NH3]` describes transplatin.
 Bracket hydrogens and missing SP sites use the same insertion position as TB/OH;
 missing sites are `Ligand::Vacancy`, not lone pairs. More than four SP sites is an
-error. See the [RDKit conventions](https://www.rdkit.org/docs/RDKit_Book.html#support-for-non-tetrahedral-atomic-stereochemistry)
-for hydrogen and missing-site examples.
+error.
 
 Allene-like axes contain an even number of consecutive double bonds (three, five,
 seven, ... atoms), with the tag on the middle atom. `AlleneStereo` stores that
@@ -125,9 +126,11 @@ element in the same periodic-table row when the table supplies one. Thus the
 common perchlorate spelling `[O-][Cl+3]([O-])([O-])[O-]` is supported. P/As with charge -2 and S/Se
 with charge -1 instead have a ceiling of 5. Unsupported charge/table combinations
 fail validation. Neutral H allows one bond; H+ and H- allow none. Other hydrogen
-charges fail validation. The policy follows the
-[RDKit valence ceilings and charge rules](https://www.rdkit.org/docs/RDKit_Book.html#valence-calculation-and-allowed-valences),
-without its structure cleanup or full sanitization pipeline.
+charges fail validation. These chemical validation limits are Ringo's documented
+policy; they are distinct from the normal valences used to infer hydrogens in the
+[OpenSMILES organic-subset rules](https://opensmiles.org/opensmiles.html#_organic_subset).
+For example, Ringo's optional validation rejects neutral nitrogen above valence
+three, although the notation's implicit-hydrogen rules include valence five.
 
 Loading records valence counts before aromaticity normalization replaces written
 bond orders, so post-load validation can still detect an over-valent input atom.
@@ -137,6 +140,12 @@ lone-pair donors, empty p orbitals and atoms with a written double/triple bond d
 not receive that extra contribution. This admits pyridine, pyrrole, pyrrolide,
 fused aromatic carbon and supported exocyclic carbonyls without counting every
 aromatic bond as a double bond.
+
+This is aromatic-aware valence bookkeeping, not aromaticity validation. The
+[OpenSMILES aromaticity rules](https://opensmiles.org/opensmiles.html#_aromaticity)
+also require a consistent electron assignment for the marked aromatic system,
+accounting for hydrogens, external bonds and charges. Those system-wide checks
+remain a separate step in #44.
 
 Elements outside this list, including transition metals and wildcard atoms, have
 no chemical valence limit in this policy. Aromatic kekulizability, isotope

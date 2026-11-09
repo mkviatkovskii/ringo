@@ -93,7 +93,7 @@ fn maximum_valence(element: u8, charge: i8) -> Result<Option<u8>, ()> {
     if matches!((element, charge), (15 | 33, -2) | (16 | 34, -1)) {
         return Ok(Some(5));
     }
-    // Charged atoms use the isoelectronic element's ceiling (RDKit valence policy).
+    // Charged atoms use the isoelectronic element's ceiling in the documented validation policy.
     let isoelectronic = i16::from(element) - i16::from(charge);
     let same_period = match element {
         5..=9 => (3..=10).contains(&isoelectronic),
