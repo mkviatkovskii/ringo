@@ -70,7 +70,10 @@ impl Molecule {
                 } else {
                     edge.source()
                 };
-                if ring_bond && self.graph[other].element.atomic_number == 0 {
+                if ring_bond
+                    && self.graph[other].element.atomic_number == 0
+                    && self.wildcard_in_aromatic_system(edge.id())
+                {
                     return Err(format!(
                         "{}: a wildcard atom in an aromatic ring is not supported",
                         self.describe(node)
@@ -115,6 +118,19 @@ impl Molecule {
             ));
         }
         Ok(())
+    }
+
+    /// Whether a ring bond from an aromatic atom to a wildcard puts the wildcard in the
+    /// written aromatic system: the bond is written aromatic, or the shortest ring through
+    /// it is written aromatic apart from wildcards, as in `c1cc*cc1`. A wildcard in a fused
+    /// non-aromatic ring, as in `c1ccc2c(c1)C*2`, is not.
+    fn wildcard_in_aromatic_system(&self, edge: EdgeIndex) -> bool {
+        self.written_order(edge) == BondOrder::Aromatic
+            || self.ring_through(edge).is_some_and(|ring| {
+                ring.iter().all(|&node| {
+                    self.graph[node].element.atomic_number == 0 || self.aromatic_as_written(node)
+                })
+            })
     }
 
     fn describe(&self, node: NodeIndex) -> String {

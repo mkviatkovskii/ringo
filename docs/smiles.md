@@ -177,8 +177,10 @@ written, before normalization. An aromatic atom is one written in lowercase or w
 `:` bond. Validation fails when:
 
 - an aromatic atom is in no ring, as in `CccccC`;
-- a ring bond joins an aromatic atom to a wildcard `*`, which Ringo does not support
-  in aromatic rings, as in `c1cc*cc1`;
+- a wildcard `*` is in the written aromatic system, which Ringo does not support:
+  joined to an aromatic atom by a `:` bond, or on a ring whose other atoms are all
+  aromatic, as in `c1cc*cc1`. A wildcard in a fused non-aromatic ring, as in
+  `c1ccc2c(c1)C*2`, is allowed;
 - the aromatic atoms needing a ring double bond cannot pair up along aromatic ring
   bonds, so there is no Kekulé structure. Examples are `c1cccc1`, pyrrole written
   `c1ccnc1` without its NH, and `C=c1ccccc1`.

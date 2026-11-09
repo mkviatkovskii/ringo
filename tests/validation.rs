@@ -171,6 +171,8 @@ fn aromatic_annotations_need_a_ring_and_a_kekule_structure() {
         "c1ccccc1-c1ccccc1",
         "c1ccccc1c1ccccc1", // an aromatic bond outside rings is single
         "*c1ccccc1",
+        // the wildcard is in the fused non-aromatic 4-ring, joined by single bonds
+        "c1ccc2c(c1)C*2",
         "O=C1Nc2ccccc2C(=O)O/C(Cc2ccccc2)=N\\c2ccccc21", // CHEMBL2004566
     ] {
         let molecule = parse_molecule(smiles).unwrap().1;
@@ -188,6 +190,10 @@ fn aromatic_annotations_need_a_ring_and_a_kekule_structure() {
         ("c1ccccc1:C", "aromatic atom outside a ring"),
         ("c", "aromatic atom outside a ring"),
         ("c1cc*cc1", "wildcard atom in an aromatic ring"),
+        ("c1cc:*:cc1", "wildcard atom in an aromatic ring"),
+        ("c1ccc2c(c1)c*2", "wildcard atom in an aromatic ring"),
+        // ambiguous, so unsupported: the 4-ring's only other atoms are aromatic
+        ("c1ccc2c(c1)**2", "wildcard atom in an aromatic ring"),
     ] {
         let molecule = parse_molecule(smiles).unwrap().1;
         let message = molecule.validate().unwrap_err();

@@ -213,11 +213,16 @@ impl Molecule {
 
     /// Whether a covalent bond lies on a ring of covalent bonds.
     pub(crate) fn is_ring_bond(&self, edge: EdgeIndex) -> bool {
-        let Some((a, b)) = self.graph.edge_endpoints(edge) else {
-            return false;
-        };
-        self.graph[edge].order != BondOrder::Dative
-            && self.shortest_path_without(a, b, edge).is_some()
+        self.ring_through(edge).is_some()
+    }
+
+    /// The shortest ring of covalent bonds through a covalent bond, as its atoms.
+    pub(crate) fn ring_through(&self, edge: EdgeIndex) -> Option<Vec<NodeIndex>> {
+        let (a, b) = self.graph.edge_endpoints(edge)?;
+        if self.graph[edge].order == BondOrder::Dative {
+            return None;
+        }
+        self.shortest_path_without(a, b, edge)
     }
 
     /// Breadth-first search from `from` to `to` that may not use `skip`; the path
