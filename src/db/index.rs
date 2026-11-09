@@ -11,46 +11,19 @@ use std::io::{self, BufRead, BufReader, BufWriter, Read, Seek, Write};
 /// Lines fingerprinted in parallel per batch: enough to keep every core busy, a few MB of memory
 pub const DEFAULT_BATCH_LINES: usize = 65_536;
 
-#[derive(Clone, Copy, Debug)]
-pub struct IndexOptions {
-    pub radius: usize,
-    pub bits: usize,
-    pub batch_lines: usize,
-    /// Run `Molecule::validate()` after loading each record, before fingerprinting.
-    pub validate: bool,
-}
-
 /// Writes `<smiles_file>.fp` with ECFP fingerprints of the given radius and length
-/// (a positive multiple of 64), and returns how many lines could not be parsed.
+/// (a positive multiple of 64), and returns how many lines failed loading or validation.
 /// Those lines get an empty fingerprint, so records stay aligned with lines.
 /// Lines are fingerprinted in parallel `batch_lines` at a time. Records are grouped by bit
 /// count, so search can skip the groups that cannot reach its threshold.
+/// If `validate` is true, runs `Molecule::validate()` after loading each record.
 pub fn index_file(
     smiles_file: &str,
     radius: usize,
     bits: usize,
     batch_lines: usize,
+    validate: bool,
 ) -> io::Result<usize> {
-    index_file_with_options(
-        smiles_file,
-        IndexOptions {
-            radius,
-            bits,
-            batch_lines,
-            validate: false,
-        },
-    )
-}
-
-/// Builds an index with explicit options. Loading and optional validation failures
-/// are counted as skipped records and stored as empty fingerprints.
-pub fn index_file_with_options(smiles_file: &str, options: IndexOptions) -> io::Result<usize> {
-    let IndexOptions {
-        radius,
-        bits,
-        batch_lines,
-        validate,
-    } = options;
     let header = IndexHeader::new(radius, bits)
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
     if batch_lines == 0 {
@@ -287,7 +260,14 @@ pub(crate) mod test {
     fn test_index() {
         let dir = TestDir::new("test_index");
         let smiles_file = copy_sample_molecules(dir.path());
-        index_file(smiles_file.to_str().unwrap(), 3, 1024, DEFAULT_BATCH_LINES).unwrap();
+        index_file(
+            smiles_file.to_str().unwrap(),
+            3,
+            1024,
+            DEFAULT_BATCH_LINES,
+            false,
+        )
+        .unwrap();
 
         let fp = std::fs::read(dir.path().join("molecules.smi.fp")).unwrap();
         let header = IndexHeader::from_bytes(fp[..INDEX_HEADER_SIZE].try_into().unwrap()).unwrap();
@@ -325,8 +305,14 @@ pub(crate) mod test {
         let overflow = format!("C{}", "(C)".repeat(300));
         std::fs::write(&smiles_file, format!("CCO\nC~C\n{overflow}\nCCC\n")).unwrap();
 
-        let skipped =
-            index_file(smiles_file.to_str().unwrap(), 2, 512, DEFAULT_BATCH_LINES).unwrap();
+        let skipped = index_file(
+            smiles_file.to_str().unwrap(),
+            2,
+            512,
+            DEFAULT_BATCH_LINES,
+            false,
+        )
+        .unwrap();
 
         assert_eq!(skipped, 2);
         let fp = std::fs::read(dir.path().join("m.smi.fp")).unwrap();
@@ -348,7 +334,7 @@ pub(crate) mod test {
         let lines: Vec<&str> = cycle.iter().copied().cycle().take(4001).collect();
         std::fs::write(&smiles_file, lines.join("\n")).unwrap();
 
-        let skipped = index_file(smiles_file.to_str().unwrap(), 2, 512, 999).unwrap();
+        let skipped = index_file(smiles_file.to_str().unwrap(), 2, 512, 999, false).unwrap();
 
         assert_eq!(skipped, lines.iter().filter(|line| **line == "C(").count());
         // line offsets and fingerprints, the empty one for the line that does not parse,
@@ -401,15 +387,29 @@ pub(crate) mod test {
     fn test_index_errors_instead_of_panicking() {
         let dir = TestDir::new("test_index_errors");
         let missing = dir.path().join("missing.smi");
-        let e = index_file(missing.to_str().unwrap(), 2, 512, DEFAULT_BATCH_LINES).unwrap_err();
+        let e = index_file(
+            missing.to_str().unwrap(),
+            2,
+            512,
+            DEFAULT_BATCH_LINES,
+            false,
+        )
+        .unwrap_err();
         assert_eq!(e.kind(), std::io::ErrorKind::NotFound);
         assert!(e.to_string().contains("missing.smi"), "{e}");
 
         let smiles_file = copy_sample_molecules(dir.path());
-        let e = index_file(smiles_file.to_str().unwrap(), 2, 100, DEFAULT_BATCH_LINES).unwrap_err();
+        let e = index_file(
+            smiles_file.to_str().unwrap(),
+            2,
+            100,
+            DEFAULT_BATCH_LINES,
+            false,
+        )
+        .unwrap_err();
         assert_eq!(e.kind(), std::io::ErrorKind::InvalidInput);
         // an empty batch would end indexing at once and write an empty index
-        let e = index_file(smiles_file.to_str().unwrap(), 2, 512, 0).unwrap_err();
+        let e = index_file(smiles_file.to_str().unwrap(), 2, 512, 0, false).unwrap_err();
         assert_eq!(e.kind(), std::io::ErrorKind::InvalidInput);
     }
 
@@ -419,13 +419,13 @@ pub(crate) mod test {
         let smiles_file = dir.path().join("m.smi");
         std::fs::write(&smiles_file, "CCO\nCCC\n").unwrap();
         let smiles_file = smiles_file.to_str().unwrap();
-        index_file(smiles_file, 2, 512, DEFAULT_BATCH_LINES).unwrap();
+        index_file(smiles_file, 2, 512, DEFAULT_BATCH_LINES, false).unwrap();
         let fp_file = dir.path().join("m.smi.fp");
         let old = std::fs::read(&fp_file).unwrap();
 
         // the second line is not UTF-8, so the rebuild fails after it has started writing
         std::fs::write(smiles_file, b"CCO\n\xff\xfe\n").unwrap();
-        let e = index_file(smiles_file, 2, 512, DEFAULT_BATCH_LINES).unwrap_err();
+        let e = index_file(smiles_file, 2, 512, DEFAULT_BATCH_LINES, false).unwrap_err();
         assert_eq!(e.kind(), std::io::ErrorKind::InvalidData);
         assert!(dir.path().join("m.smi.fp.unsorted.tmp").exists());
         assert_eq!(std::fs::read(&fp_file).unwrap(), old);

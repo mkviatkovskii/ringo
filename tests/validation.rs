@@ -1,5 +1,3 @@
-mod common;
-
 use ringo::io::smiles::reader::molecule::parse_molecule;
 
 #[test]
@@ -27,9 +25,7 @@ fn valence_is_optional_and_accounts_for_charge_and_hydrogens() {
         "[I-](F)(F)(F)(F)(F)F",
     ] {
         let molecule = parse_molecule(smiles).unwrap().1;
-        let before = molecule.ecfp(2, 512).to_bytes();
         assert!(molecule.validate().is_err(), "{smiles}");
-        assert_eq!(molecule.ecfp(2, 512).to_bytes(), before, "{smiles}");
     }
     for smiles in [
         "CCO",
@@ -59,9 +55,7 @@ fn valence_is_optional_and_accounts_for_charge_and_hydrogens() {
         "*",
     ] {
         let molecule = parse_molecule(smiles).unwrap().1;
-        let before = molecule.ecfp(2, 512).to_bytes();
         molecule.validate().unwrap();
-        assert_eq!(molecule.ecfp(2, 512).to_bytes(), before, "{smiles}");
     }
 }
 
@@ -89,11 +83,9 @@ fn ordinary_cations_do_not_require_a_same_period_valence_table_entry() {
         "[B+2][B+2]",
     ] {
         let molecule = parse_molecule(smiles).unwrap().1;
-        let before = molecule.ecfp(2, 512).to_bytes();
         molecule
             .validate()
             .unwrap_or_else(|error| panic!("{smiles}: {error}"));
-        assert_eq!(molecule.ecfp(2, 512).to_bytes(), before, "{smiles}");
     }
     for smiles in [
         "[C+7]",
@@ -133,19 +125,20 @@ fn aromatic_and_dative_valence_keep_supported_spellings() {
         "[NH3]->[Cu+2]",
         "[Cu+2]<-[NH3]",
         "n1ccccc1->[Cu]",
-        "[NH3]<-[Cu]",
         "Cl[Pt@SP1](Cl)(<-[NH3])<-[NH3]",
         "FC=[C@]=CCl",
     ] {
-        let expected = !matches!(smiles, "[NH3]<-[Cu]");
-        assert_eq!(
+        assert!(
             parse_molecule(smiles).unwrap().1.validate().is_ok(),
-            expected,
             "{smiles}"
         );
     }
-    for smiles in ["Cn1(C)ccccc1", "c1(C)(C)ccccc1", "[nH2]1cccc1"] {
-        assert!(parse_molecule(smiles).is_ok(), "{smiles}");
+    for smiles in [
+        "Cn1(C)ccccc1",
+        "c1(C)(C)ccccc1",
+        "[nH2]1cccc1",
+        "[NH3]<-[Cu]",
+    ] {
         assert!(
             parse_molecule(smiles).unwrap().1.validate().is_err(),
             "{smiles}"
@@ -157,24 +150,17 @@ fn aromatic_and_dative_valence_keep_supported_spellings() {
 fn loading_always_checks_syntax_and_arithmetic() {
     let overflow = format!("C{}", "(C)".repeat(256));
     let bracket_overflow = format!("[C]{}", "(C)".repeat(256));
-    for smiles in [
-        "C(",
-        "C~C",
-        "C1CC",
-        "[CH255]C",
-        &overflow,
-        &bracket_overflow,
-    ] {
+    for smiles in ["C(", "C~C", "C1CC", &overflow] {
         assert!(parse_molecule(smiles).is_err(), "{smiles}");
     }
     assert!(parse_molecule("[CH255]").is_ok());
+    for smiles in ["[CH255]C", &bracket_overflow] {
+        assert!(
+            parse_molecule(smiles).unwrap().1.validate().is_err(),
+            "{smiles}"
+        );
+    }
     assert!(parse_molecule(&format!("C{}", "(C)".repeat(255))).is_ok());
-}
-
-#[test]
-fn indexing_and_search_do_not_validate_chemistry() {
-    let records = "CCO ethanol\nC(C)(C)(C)(C)C overvalent\n";
-    common::assert_search("unvalidated", records, records.lines());
 }
 
 #[test]

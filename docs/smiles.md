@@ -112,9 +112,8 @@ valence; aromaticity consistency and chemical stereogenicity checks are not yet
 implemented. A successful result only means the implemented checks passed.
 Errors identify the
 zero-based atom index and its excessive valence or unsupported charge state.
-Validation never modifies the molecule, its stereo records or its fingerprints.
-Loading always checks syntax, stereo representation and `u8` arithmetic, including
-bond-order and hydrogen totals on bracket atoms, independently of this optional step.
+Loading always checks syntax, stereo representation and arithmetic limits for
+implicit-hydrogen calculation, independently of this optional step.
 
 The first implemented check covers upper valence limits for H, B, C, N, O, F, Si, P, S,
 Cl, As, Se, Br and I. Neutral ceilings are 1 for H/F/Cl/Br, 2 for O, 3 for B/N,
@@ -160,21 +159,7 @@ Elements outside this list, including transition metals and wildcard atoms, have
 no chemical valence limit in this policy. Aromatic kekulizability, isotope
 stability, ligand distinctness, stereogenicity and general chemical feasibility
 are not validated. Neutral hypervalent nitrogen is rejected rather than rewritten
-into a charged representation. Passing validation means only passing these rules.
-
-Parsing never invokes chemical validation. Library callers can call the method
-explicitly after loading. The existing `index_file` and `similarity_search` APIs
-remain permissive; `index_file_with_options` and `similarity_search_with_options`
-accept `IndexOptions` and `SearchOptions` with a `validate` field to request that
-separate post-load step before fingerprinting.
-
-Add `--validate` to either CLI to select the same step; its position is unrestricted.
-Indexing counts validation failures as skipped records and stores empty fingerprints,
-just as for loading failures. Search reports a validation error for an invalid query.
-The search switch checks only the loaded query, not records already in the index.
-Rebuild an index with `--validate` to exclude failed dataset records. The chosen
-validation policy is not stored in the index; accepted fingerprints and index
-format version 1 remain unchanged.
+into a charged representation.
 
 ## Known gaps
 

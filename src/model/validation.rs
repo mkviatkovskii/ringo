@@ -32,7 +32,7 @@ impl Molecule {
             else {
                 continue;
             };
-            if valence > u16::from(maximum) {
+            if valence > u32::from(maximum) {
                 return Err(format!(
                     "{}: valence {valence} exceeds maximum {maximum}",
                     context()
@@ -42,28 +42,26 @@ impl Molecule {
         Ok(())
     }
 
-    pub(crate) fn bond_valence(&self, node: NodeIndex) -> Option<u8> {
-        self.graph.edges(node).try_fold(0u8, |sum, edge| {
-            let order = match edge.weight().order {
-                BondOrder::Dative => u8::from(edge.weight().donor != Some(node)),
+    pub(crate) fn bond_valence(&self, node: NodeIndex) -> u32 {
+        self.graph
+            .edges(node)
+            .map(|edge| match edge.weight().order {
+                BondOrder::Dative => u32::from(edge.weight().donor != Some(node)),
                 BondOrder::Single | BondOrder::Aromatic => 1,
                 BondOrder::Double => 2,
                 BondOrder::Triple => 3,
-            };
-            sum.checked_add(order)
-        })
+            })
+            .sum()
     }
 
-    pub(crate) fn record_valences(&mut self) -> Option<()> {
+    pub(crate) fn record_valences(&mut self) {
         self.input_valences = self
             .graph
             .node_indices()
             .map(|node| {
                 let atom = &self.graph[node];
-                let valence = self
-                    .bond_valence(node)?
-                    .checked_add(atom.hs)?
-                    .checked_add(atom.implicit_hs)?;
+                let valence =
+                    self.bond_valence(node) + u32::from(atom.hs) + u32::from(atom.implicit_hs);
                 let aromatic = self
                     .graph
                     .edges(node)
@@ -78,12 +76,10 @@ impl Molecule {
                     (7 | 15 | 33, 0) => valence == 3,
                     _ => false,
                 };
-                let pi = u16::from(aromatic && !has_pi_bond && !donor_or_empty);
-                // The written total fits u8; its estimated aromatic contribution can add one.
-                Some(u16::from(valence) + pi)
+                let pi = u32::from(aromatic && !has_pi_bond && !donor_or_empty);
+                valence + pi
             })
-            .collect::<Option<_>>()?;
-        Some(())
+            .collect();
     }
 }
 

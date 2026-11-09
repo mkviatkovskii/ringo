@@ -14,7 +14,7 @@ pub struct Molecule {
     pub(crate) bond_stereo: Vec<crate::model::stereo::DoubleBondStereo>,
     pub(crate) allene_stereo: Vec<crate::model::stereo::AlleneStereo>,
     // Aromaticity replaces written bond orders; retain their valence for post-load checks.
-    pub(crate) input_valences: Vec<u16>,
+    pub(crate) input_valences: Vec<u32>,
 }
 
 impl Molecule {

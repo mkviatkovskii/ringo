@@ -52,5 +52,3 @@ previously skipped records or fingerprint semantics change. Atom class/map label
 and the addition of dative-bond support leave existing covalent fingerprints unchanged.
 Square-planar and allene/cumulene tags also leave fingerprints unchanged; rebuild
 indexes to include previously rejected SP/AL-tagged records.
-Optional post-load validation leaves molecules and accepted fingerprints unchanged.
-Rebuild an index when changing its validation policy; the policy is not stored in the header.

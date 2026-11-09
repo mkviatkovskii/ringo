@@ -53,9 +53,8 @@ fn implicit_hydrogens(
         1 | 9 | 17 | 35 | 53 => &[1],
         _ => &[],
     };
-    let mut bonds = molecule
-        .bond_valence(node)
-        .ok_or_else(|| ErrMode::Cut(ContextError::new()))?;
+    let mut bonds =
+        u8::try_from(molecule.bond_valence(node)).map_err(|_| ErrMode::Cut(ContextError::new()))?;
     let aromatic = aromatic
         || molecule
             .graph
@@ -319,9 +318,7 @@ fn finish_molecule(
             atom.implicit_hs = hs;
         }
     }
-    molecule
-        .record_valences()
-        .ok_or_else(|| ErrMode::Cut(ContextError::new()))?;
+    molecule.record_valences();
     // after the hydrogens: perception moves electrons around, not hydrogens
     molecule.perceive_aromaticity();
 

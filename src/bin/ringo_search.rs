@@ -1,5 +1,5 @@
 use clap::Parser;
-use ringo::db::search::{similarity_search_with_options, SearchMode, SearchOptions};
+use ringo::db::search::{similarity_search, SearchMode};
 use std::process::ExitCode;
 
 #[derive(Parser)]
@@ -30,16 +30,14 @@ struct Cli {
 
 fn main() -> ExitCode {
     let args = Cli::parse();
-    let results = match similarity_search_with_options(
+    let results = match similarity_search(
         &args.smiles_file,
         &args.query,
-        SearchOptions {
-            min_similarity: args.min_similarity,
-            max_similarity: args.max_similarity,
-            limit: args.limit,
-            mode: args.mode,
-            validate: args.validate,
-        },
+        args.min_similarity,
+        args.max_similarity,
+        args.limit,
+        args.mode,
+        args.validate,
     ) {
         Ok(results) => results,
         Err(error) => {

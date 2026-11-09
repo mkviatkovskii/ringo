@@ -53,11 +53,7 @@ parameters. Radius 2 corresponds to ECFP4.
 Both tools provide `--help` and `--version`; flags may appear before or after
 positional arguments.
 
-Molecule loading is permissive. Add `--validate` to either command to run the
-optional `molecule.validate()` step after loading and before fingerprinting.
-Indexing skips failed records; search rejects a query that fails validation.
-Search does not revalidate indexed records, so build the index with `--validate`
-to exclude records that fail the checks. See the
+Add `--validate` to run optional post-load checks before fingerprinting; see the
 [validation policy and limits](docs/smiles.md#optional-molecule-validation).
 
 Search includes scores between the minimum and maximum, inclusive. The default

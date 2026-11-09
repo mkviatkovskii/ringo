@@ -1,5 +1,5 @@
 use clap::{CommandFactory, Parser};
-use ringo::db::index::{index_file_with_options, IndexOptions, DEFAULT_BATCH_LINES};
+use ringo::db::index::{index_file, DEFAULT_BATCH_LINES};
 use ringo::db::index_header::IndexHeader;
 use std::process::ExitCode;
 
@@ -34,14 +34,12 @@ fn main() -> ExitCode {
             .error(clap::error::ErrorKind::ValueValidation, error)
             .exit();
     }
-    match index_file_with_options(
+    match index_file(
         &args.smiles_file,
-        IndexOptions {
-            radius: args.radius,
-            bits: args.bits,
-            batch_lines: args.batch_lines,
-            validate: args.validate,
-        },
+        args.radius,
+        args.bits,
+        args.batch_lines,
+        args.validate,
     ) {
         Ok(skipped) => {
             if skipped > 0 {
