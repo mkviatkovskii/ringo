@@ -1,9 +1,10 @@
 use crate::model::bond::BondOrder;
 use crate::model::molecule::Molecule;
+use fixedbitset::FixedBitSet;
+use petgraph::algo::bridges;
 use petgraph::stable_graph::{EdgeIndex, NodeIndex};
-use petgraph::visit::{EdgeRef, IntoEdgeReferences};
-use std::collections::hash_map::Entry;
-use std::collections::{HashMap, HashSet, VecDeque};
+use petgraph::visit::{EdgeFiltered, EdgeIndexable, EdgeRef, IntoEdgeReferences, NodeIndexable};
+use std::collections::HashSet;
 
 impl Molecule {
     /// Marks every ring that obeys Hückel's rule (4n+2 π electrons) as aromatic: its
@@ -12,11 +13,8 @@ impl Molecule {
     /// `Aromatic` bond becomes single. Afterwards a molecule has the same atoms and bonds
     /// whether it was written in Kekulé form ("C1=CC=CC=C1") or aromatic form ("c1ccccc1").
     pub fn perceive_aromaticity(&mut self) {
-        let rings = self.rings();
-        let ring_bonds: HashSet<EdgeIndex> = rings
-            .iter()
-            .flat_map(|ring| self.ring_edges(ring))
-            .collect();
+        let ring_bonds = self.covalent_ring_bonds();
+        let rings = self.rings(&ring_bonds);
 
         // aromatic by itself, so all its bonds are aromatic
         let mut alone: Vec<bool> = rings
@@ -88,11 +86,7 @@ impl Molecule {
     }
 
     /// Whether these atoms hold 4n+2 π electrons, each of them giving some.
-    fn huckel(
-        &self,
-        atoms: impl Iterator<Item = NodeIndex>,
-        ring_bonds: &HashSet<EdgeIndex>,
-    ) -> bool {
+    fn huckel(&self, atoms: impl Iterator<Item = NodeIndex>, ring_bonds: &FixedBitSet) -> bool {
         let mut electrons = 0;
         for node in atoms {
             match self.pi_electrons(node, ring_bonds) {
@@ -105,13 +99,13 @@ impl Molecule {
 
     /// π electrons an atom gives to an aromatic ring, or None when it cannot be in one
     /// (an sp3 carbon such as the CH2 of cyclopentadiene).
-    fn pi_electrons(&self, node: NodeIndex, ring_bonds: &HashSet<EdgeIndex>) -> Option<u32> {
+    fn pi_electrons(&self, node: NodeIndex, ring_bonds: &FixedBitSet) -> Option<u32> {
         let atom = &self.graph[node];
         let mut ring_double = false;
         let mut ring_aromatic = false;
         let mut exocyclic_double = None;
         for edge in self.graph.edges(node) {
-            let in_ring = ring_bonds.contains(&edge.id());
+            let in_ring = ring_bonds.contains(edge.id().index());
             match edge.weight().order {
                 BondOrder::Triple => return None,
                 BondOrder::Double if in_ring => ring_double = true,
@@ -165,17 +159,43 @@ impl Molecule {
             .filter_map(|(&a, &b)| self.graph.find_edge_undirected(a, b).map(|(edge, _)| edge))
     }
 
+    /// Covalent bonds in cycles: every covalent bond except bridges.
+    pub(crate) fn covalent_ring_bonds(&self) -> FixedBitSet {
+        let graph = &self.graph;
+        let mut ring_bonds = FixedBitSet::with_capacity(graph.edge_bound());
+        let covalent =
+            EdgeFiltered::from_fn(graph, |edge| edge.weight().order != BondOrder::Dative);
+        for edge in graph
+            .edge_indices()
+            .filter(|&edge| graph[edge].order != BondOrder::Dative)
+        {
+            ring_bonds.insert(edge.index());
+        }
+        for edge in bridges(&covalent) {
+            ring_bonds.remove(edge.id().index());
+        }
+        ring_bonds
+    }
+
     /// The shortest ring through each bond, in ring order, without duplicates. For the
     /// small fused rings of drug-like molecules this is the usual smallest set of rings.
-    fn rings(&self) -> Vec<Vec<NodeIndex>> {
+    fn rings(&self, ring_bonds: &FixedBitSet) -> Vec<Vec<NodeIndex>> {
         let mut seen: HashSet<Vec<NodeIndex>> = HashSet::new();
         let mut rings = Vec::new();
+        let mut parent = vec![None; self.graph.node_bound()];
+        let mut queue = Vec::new();
         for edge in (&self.graph)
             .edge_references()
-            .filter(|edge| edge.weight().order != BondOrder::Dative)
+            .filter(|edge| ring_bonds.contains(edge.id().index()))
         {
-            let Some(ring) = self.shortest_path_without(edge.source(), edge.target(), edge.id())
-            else {
+            let Some(ring) = self.shortest_path_without(
+                edge.source(),
+                edge.target(),
+                edge.id(),
+                ring_bonds,
+                &mut parent,
+                &mut queue,
+            ) else {
                 continue;
             };
             let mut key = ring.clone();
@@ -194,15 +214,27 @@ impl Molecule {
         from: NodeIndex,
         to: NodeIndex,
         skip: EdgeIndex,
+        ring_bonds: &FixedBitSet,
+        parent: &mut [Option<NodeIndex>],
+        queue: &mut Vec<NodeIndex>,
     ) -> Option<Vec<NodeIndex>> {
-        let mut parent: HashMap<NodeIndex, NodeIndex> = HashMap::from([(from, from)]);
-        let mut queue = VecDeque::from([from]);
-        while let Some(node) = queue.pop_front() {
+        // Retain every queued node, including those left at an early return, so
+        // the next search clears only the parent entries this search touched.
+        for node in queue.drain(..) {
+            parent[node.index()] = None;
+        }
+        parent[from.index()] = Some(from);
+        queue.push(from);
+        let mut head = 0;
+        while head < queue.len() {
+            let node = queue[head];
+            head += 1;
             if node == to {
                 let mut path = vec![to];
                 let mut current = to;
                 while current != from {
-                    current = parent[&current];
+                    current = parent[current.index()]
+                        .unwrap_or_else(|| panic!("visited node has a parent"));
                     path.push(current);
                 }
                 return Some(path);
@@ -210,16 +242,16 @@ impl Molecule {
             for edge in self
                 .graph
                 .edges(node)
-                .filter(|edge| edge.id() != skip && edge.weight().order != BondOrder::Dative)
+                .filter(|edge| edge.id() != skip && ring_bonds.contains(edge.id().index()))
             {
                 let next = if edge.source() == node {
                     edge.target()
                 } else {
                     edge.source()
                 };
-                if let Entry::Vacant(entry) = parent.entry(next) {
-                    entry.insert(node);
-                    queue.push_back(next);
+                if parent[next.index()].is_none() {
+                    parent[next.index()] = Some(node);
+                    queue.push(next);
                 }
             }
         }
@@ -232,6 +264,7 @@ mod tests {
     use crate::io::smiles::reader::molecule::parse_molecule;
     use crate::math::similarity::tanimoto::tanimoto_bitset;
     use crate::model::bond::BondOrder;
+    use petgraph::stable_graph::NodeIndex;
 
     fn aromatic_atoms(smiles: &str) -> Vec<bool> {
         let m = parse_molecule(smiles).unwrap().1;
@@ -272,6 +305,64 @@ mod tests {
             "C=C1C=CC=C1",
         ] {
             assert!(aromatic_atoms(smiles).iter().all(|&a| !a), "{smiles}");
+        }
+    }
+
+    #[test]
+    fn test_ring_search_with_long_branches_and_disconnected_chains() {
+        let chain = "C".repeat(128);
+        let smiles = format!("{chain}c1ccccc1{chain}.{chain}");
+        let molecule = parse_molecule(&smiles).unwrap().1;
+        assert_eq!(
+            molecule
+                .graph
+                .edge_weights()
+                .filter(|bond| bond.order == BondOrder::Aromatic)
+                .count(),
+            6
+        );
+        assert_eq!(
+            molecule.graph.node_weights().filter(|a| a.aromatic).count(),
+            6
+        );
+    }
+
+    #[test]
+    fn test_ring_search_reuses_buffers_across_spiro_and_disconnected_rings() {
+        let molecule = parse_molecule("C1CC12CC2.C1CC1").unwrap().1;
+        let mut rings: Vec<Vec<usize>> = molecule
+            .rings(&molecule.covalent_ring_bonds())
+            .into_iter()
+            .map(|ring| {
+                let mut atoms: Vec<usize> = ring.into_iter().map(NodeIndex::index).collect();
+                atoms.sort_unstable();
+                atoms
+            })
+            .collect();
+        rings.sort_unstable();
+        assert_eq!(rings, vec![vec![0, 1, 2], vec![2, 3, 4], vec![5, 6, 7]]);
+    }
+
+    #[test]
+    fn test_dative_cycle_closures_do_not_create_covalent_ring_bonds() {
+        for (smiles, expected_bonds, expected_rings) in [
+            ("N->1CC[Cu]1", 0, 0),
+            ("N1C=CC=C->[B]<-1", 0, 0),
+            ("N->1CC[Cu]1.c1ccccc1", 6, 1),
+        ] {
+            let molecule = parse_molecule(smiles).unwrap().1;
+            let ring_bonds = molecule.covalent_ring_bonds();
+            assert_eq!(ring_bonds.count_ones(..), expected_bonds, "{smiles}");
+            assert_eq!(
+                molecule.rings(&ring_bonds).len(),
+                expected_rings,
+                "{smiles}"
+            );
+            for edge in molecule.graph.edge_indices() {
+                if molecule.graph[edge].order == BondOrder::Dative {
+                    assert!(!ring_bonds.contains(edge.index()), "{smiles}");
+                }
+            }
         }
     }
 
