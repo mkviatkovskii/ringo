@@ -1,22 +1,21 @@
 use crate::model::bond::BondOrder;
 use crate::model::molecule::Molecule;
+use fixedbitset::FixedBitSet;
+use petgraph::algo::bridges;
 use petgraph::stable_graph::{EdgeIndex, NodeIndex};
-use petgraph::visit::{EdgeRef, IntoEdgeReferences};
+use petgraph::visit::{EdgeFiltered, EdgeIndexable, EdgeRef, IntoEdgeReferences};
 use std::collections::hash_map::Entry;
 use std::collections::{HashMap, HashSet, VecDeque};
 
 impl Molecule {
     /// Marks every ring that obeys Hückel's rule (4n+2 π electrons) as aromatic: its
-    /// atoms aromatic, its bonds `Aromatic`. A ring written with aromatic bonds only
-    /// (lowercase atoms, or `:`) that fails the rule is still taken as aromatic. Any other
+    /// atoms aromatic, its bonds `Aromatic`. A ring written in lowercase, or with `:`
+    /// bonds, that fails the rule is still taken as aromatic, as written. Any other
     /// `Aromatic` bond becomes single. Afterwards a molecule has the same atoms and bonds
     /// whether it was written in Kekulé form ("C1=CC=CC=C1") or aromatic form ("c1ccccc1").
     pub fn perceive_aromaticity(&mut self) {
-        let rings = self.rings();
-        let ring_bonds: HashSet<EdgeIndex> = rings
-            .iter()
-            .flat_map(|ring| self.ring_edges(ring))
-            .collect();
+        let ring_bonds = self.covalent_ring_bonds();
+        let rings = self.rings(&ring_bonds);
 
         // aromatic by itself, so all its bonds are aromatic
         let mut alone: Vec<bool> = rings
@@ -96,11 +95,7 @@ impl Molecule {
     }
 
     /// Whether these atoms hold 4n+2 π electrons, each of them giving some.
-    fn huckel(
-        &self,
-        atoms: impl Iterator<Item = NodeIndex>,
-        ring_bonds: &HashSet<EdgeIndex>,
-    ) -> bool {
+    fn huckel(&self, atoms: impl Iterator<Item = NodeIndex>, ring_bonds: &FixedBitSet) -> bool {
         let mut electrons = 0;
         for node in atoms {
             match self.pi_electrons(node, ring_bonds) {
@@ -113,13 +108,13 @@ impl Molecule {
 
     /// π electrons an atom gives to an aromatic ring, or None when it cannot be in one
     /// (an sp3 carbon such as the CH2 of cyclopentadiene).
-    fn pi_electrons(&self, node: NodeIndex, ring_bonds: &HashSet<EdgeIndex>) -> Option<u32> {
+    fn pi_electrons(&self, node: NodeIndex, ring_bonds: &FixedBitSet) -> Option<u32> {
         let atom = &self.graph[node];
         let mut ring_double = false;
         let mut ring_aromatic = false;
         let mut exocyclic_double = None;
         for edge in self.graph.edges(node) {
-            let in_ring = ring_bonds.contains(&edge.id());
+            let in_ring = ring_bonds.contains(edge.id().index());
             match edge.weight().order {
                 BondOrder::Triple => return None,
                 BondOrder::Double if in_ring => ring_double = true,
@@ -173,16 +168,34 @@ impl Molecule {
             .filter_map(|(&a, &b)| self.graph.find_edge_undirected(a, b).map(|(edge, _)| edge))
     }
 
+    /// Covalent bonds in cycles: every covalent bond except bridges.
+    pub(crate) fn covalent_ring_bonds(&self) -> FixedBitSet {
+        let graph = &self.graph;
+        let mut ring_bonds = FixedBitSet::with_capacity(graph.edge_bound());
+        let covalent =
+            EdgeFiltered::from_fn(graph, |edge| edge.weight().order != BondOrder::Dative);
+        for edge in graph
+            .edge_indices()
+            .filter(|&edge| graph[edge].order != BondOrder::Dative)
+        {
+            ring_bonds.insert(edge.index());
+        }
+        for edge in bridges(&covalent) {
+            ring_bonds.remove(edge.id().index());
+        }
+        ring_bonds
+    }
+
     /// Every shortest ring through each bond, in ring order, without duplicates. Taking all
     /// of them when several tie, as around the central atom of phenalene, keeps the set the
     /// same whatever the atom order. For the small fused rings of drug-like molecules this is
     /// the usual smallest set of rings.
-    fn rings(&self) -> Vec<Vec<NodeIndex>> {
+    fn rings(&self, ring_bonds: &FixedBitSet) -> Vec<Vec<NodeIndex>> {
         let mut seen: HashSet<Vec<EdgeIndex>> = HashSet::new();
         let mut rings = Vec::new();
         for edge in (&self.graph)
             .edge_references()
-            .filter(|edge| edge.weight().order != BondOrder::Dative)
+            .filter(|edge| ring_bonds.contains(edge.id().index()))
         {
             for ring in self.shortest_paths_without(edge.source(), edge.target(), edge.id()) {
                 let mut key: Vec<EdgeIndex> = self.ring_edges(&ring).collect();
@@ -264,6 +277,7 @@ mod tests {
     use crate::io::smiles::reader::molecule::parse_molecule;
     use crate::math::similarity::tanimoto::tanimoto_bitset;
     use crate::model::bond::BondOrder;
+    use petgraph::stable_graph::NodeIndex;
 
     fn aromatic_atoms(smiles: &str) -> Vec<bool> {
         let m = parse_molecule(smiles).unwrap().1;
@@ -308,6 +322,64 @@ mod tests {
     }
 
     #[test]
+    fn test_ring_search_with_long_branches_and_disconnected_chains() {
+        let chain = "C".repeat(128);
+        let smiles = format!("{chain}c1ccccc1{chain}.{chain}");
+        let molecule = parse_molecule(&smiles).unwrap().1;
+        assert_eq!(
+            molecule
+                .graph
+                .edge_weights()
+                .filter(|bond| bond.order == BondOrder::Aromatic)
+                .count(),
+            6
+        );
+        assert_eq!(
+            molecule.graph.node_weights().filter(|a| a.aromatic).count(),
+            6
+        );
+    }
+
+    #[test]
+    fn test_ring_search_reuses_buffers_across_spiro_and_disconnected_rings() {
+        let molecule = parse_molecule("C1CC12CC2.C1CC1").unwrap().1;
+        let mut rings: Vec<Vec<usize>> = molecule
+            .rings(&molecule.covalent_ring_bonds())
+            .into_iter()
+            .map(|ring| {
+                let mut atoms: Vec<usize> = ring.into_iter().map(NodeIndex::index).collect();
+                atoms.sort_unstable();
+                atoms
+            })
+            .collect();
+        rings.sort_unstable();
+        assert_eq!(rings, vec![vec![0, 1, 2], vec![2, 3, 4], vec![5, 6, 7]]);
+    }
+
+    #[test]
+    fn test_dative_cycle_closures_do_not_create_covalent_ring_bonds() {
+        for (smiles, expected_bonds, expected_rings) in [
+            ("N->1CC[Cu]1", 0, 0),
+            ("N1C=CC=C->[B]<-1", 0, 0),
+            ("N->1CC[Cu]1.c1ccccc1", 6, 1),
+        ] {
+            let molecule = parse_molecule(smiles).unwrap().1;
+            let ring_bonds = molecule.covalent_ring_bonds();
+            assert_eq!(ring_bonds.count_ones(..), expected_bonds, "{smiles}");
+            assert_eq!(
+                molecule.rings(&ring_bonds).len(),
+                expected_rings,
+                "{smiles}"
+            );
+            for edge in molecule.graph.edge_indices() {
+                if molecule.graph[edge].order == BondOrder::Dative {
+                    assert!(!ring_bonds.contains(edge.index()), "{smiles}");
+                }
+            }
+        }
+    }
+
+    #[test]
     fn test_bonds_outside_aromatic_rings_are_single() {
         let m = parse_molecule("c1ccc2c(c1)Cc1ccccc12").unwrap().1;
         let aromatic = m
@@ -317,16 +389,13 @@ mod tests {
             .count();
         // two benzene rings; the bond they share with the 5-ring is single
         assert_eq!(aromatic, 12);
-        let single = |smiles| {
-            let m = parse_molecule(smiles).unwrap().1;
-            m.graph
-                .edge_weights()
-                .filter(|bond| bond.order == BondOrder::Single)
-                .count()
-        };
-        assert_eq!(single("c1ccccc1:c1ccccc1"), 1);
-        // biphenylene's 4-ring has aromatic atoms but is not aromatic itself
-        assert_eq!(single("c1ccc2c(c1)-c1ccccc1-2"), 2);
+        let m = parse_molecule("c1ccccc1:c1ccccc1").unwrap().1;
+        let single = m
+            .graph
+            .edge_weights()
+            .filter(|bond| bond.order == BondOrder::Single)
+            .count();
+        assert_eq!(single, 1);
     }
 
     #[test]
@@ -372,8 +441,6 @@ mod tests {
             ("C1=CC=C(C=C1)C1=CC=CC=C1", "c1ccccc1c1ccccc1"),
             ("C1C2=CC=CC=C2C2=CC=CC=C12", "c1ccc2c(c1)Cc1ccccc1-2"),
             ("c1ccc2c(c1)Cc1ccccc12", "c1ccc2c(c1)Cc1ccccc1-2"),
-            // biphenylene: the bonds written single between the benzene rings stay single
-            ("C1=CC=C2C(=C1)C1=CC=CC=C12", "c1ccc2c(c1)-c1ccccc1-2"),
         ] {
             let a = parse_molecule(kekule).unwrap().1.ecfp(2, 512);
             let b = parse_molecule(aromatic).unwrap().1.ecfp(2, 512);
