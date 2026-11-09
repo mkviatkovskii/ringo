@@ -1,6 +1,7 @@
 /.idea
 /target
 *.fp
+*.key
 /tests/data/*.gz
 /tests/data/chebi_*.smi
 /tests/data/chembl_*.smi

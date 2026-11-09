@@ -133,7 +133,7 @@ fn bond_code(bond: &Bond, node: NodeIndex) -> u64 {
 
 /// 64-bit FNV-1a over little-endian words: a fixed, documented hash, unlike
 /// `DefaultHasher`, whose algorithm may change between Rust releases.
-fn fnv1a(words: impl IntoIterator<Item = u64>) -> u64 {
+pub(crate) fn fnv1a(words: impl IntoIterator<Item = u64>) -> u64 {
     let mut hash = 0xcbf2_9ce4_8422_2325;
     for byte in words.into_iter().flat_map(u64::to_le_bytes) {
         hash ^= u64::from(byte);

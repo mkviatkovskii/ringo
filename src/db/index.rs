@@ -1,3 +1,4 @@
+use crate::db::exact_search::write_key_index;
 use crate::db::index_header::IndexHeader;
 use crate::db::index_item::{index_item_size, split_record, IndexItem};
 use crate::db::with_path;
@@ -12,8 +13,9 @@ use std::io::{self, BufRead, BufReader, BufWriter, Read, Seek, Write};
 pub const DEFAULT_BATCH_LINES: usize = 65_536;
 
 /// Writes `<smiles_file>.fp` with ECFP fingerprints of the given radius and length
-/// (a positive multiple of 64), and returns how many lines failed loading or validation.
-/// Those lines get an empty fingerprint, so records stay aligned with lines.
+/// (a positive multiple of 64), and `<smiles_file>.key` with structure keys for exact
+/// search. Returns how many lines failed loading or validation. Those lines get an empty
+/// fingerprint, so records stay aligned with lines, and no key.
 /// Lines are fingerprinted in parallel `batch_lines` at a time. Records are grouped by bit
 /// count, so search can skip the groups that cannot reach its threshold.
 /// If `validate` is true, runs `Molecule::validate()` after loading each record.
@@ -49,20 +51,26 @@ pub fn index_file(
     let mut writer =
         BufWriter::new(File::create(&unsorted_path).map_err(with_path(&unsorted_path))?);
 
+    // (structure key, line offset) of each parsed line, for exact search
+    let mut keys: Vec<(u64, u64)> = Vec::new();
+
     let mut reader = BufReader::new(fi);
     let mut lines =
         read_batch(&mut reader, &mut offset, batch_lines).map_err(with_path(smiles_file))?;
-    let mut fingerprinted: Vec<(usize, Option<Fingerprint>)> = Vec::new();
+    let mut fingerprinted: Vec<(usize, Option<(Fingerprint, u64)>)> = Vec::new();
     // one thread writes the previous batch and reads the next while the others fingerprint this
     // one (about 10% faster on ChEMBL than taking turns); the loop ends after writing the last batch
     loop {
         let (next, fingerprints) = rayon::join(
             || -> io::Result<_> {
-                for (position, fingerprint) in fingerprinted.drain(..) {
-                    let fingerprint = fingerprint.unwrap_or_else(|| {
+                for (position, described) in fingerprinted.drain(..) {
+                    let fingerprint = if let Some((fingerprint, key)) = described {
+                        keys.push((key, position as u64));
+                        fingerprint
+                    } else {
                         skipped += 1;
                         Fingerprint(FixedBitSet::with_capacity(bits))
-                    });
+                    };
                     groups[fingerprint.0.count_ones(..)] += 1;
                     writer.write_all(
                         &IndexItem {
@@ -82,7 +90,9 @@ pub fn index_file(
                         parse_molecule(line.trim_end_matches(['\n', '\r']))
                             .ok()
                             .filter(|(_, molecule)| !validate || molecule.validate().is_ok())
-                            .map(|(_, molecule)| molecule.ecfp(radius, bits))
+                            .map(|(_, molecule)| {
+                                (molecule.ecfp(radius, bits), molecule.exact_key())
+                            })
                     })
                     .collect::<Vec<_>>()
             },
@@ -119,6 +129,9 @@ pub fn index_file(
     )?;
     std::fs::rename(&tmp_path, &fp_path).map_err(with_path(&fp_path))?;
     std::fs::remove_file(&unsorted_path).map_err(with_path(&unsorted_path))?;
+    // shortcut: sorts every key in memory, 16 bytes a line (46 MB for ChEMBL); ZINC scale
+    // needs an external sort
+    write_key_index(&(smiles_file.to_owned() + ".key"), offset as u64, keys)?;
     Ok(skipped)
 }
 
