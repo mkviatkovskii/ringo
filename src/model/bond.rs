@@ -1,4 +1,4 @@
-#[derive(Debug, Eq, PartialEq, Clone, Copy)]
+#[derive(Debug, Eq, PartialEq, Clone, Copy, Hash, PartialOrd, Ord)]
 pub enum BondOrder {
     Single,
     Double,
