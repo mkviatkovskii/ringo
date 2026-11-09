@@ -2,9 +2,7 @@ use crate::model::bond::{Bond, BondOrder};
 use crate::model::fingerprint::Fingerprint;
 use crate::model::molecule::Molecule;
 use fixedbitset::FixedBitSet;
-use petgraph::algo::bridges;
 use petgraph::stable_graph::NodeIndex;
-use petgraph::visit::EdgeFiltered;
 use petgraph::visit::{EdgeIndexable, EdgeRef, NodeIndexable};
 use std::collections::HashSet;
 
@@ -18,18 +16,7 @@ impl Molecule {
         let mut fp = FixedBitSet::with_capacity(bits);
 
         // Covalent ring membership excludes coordination bonds; all bonds still enter ECFP.
-        let mut ring_bonds = FixedBitSet::with_capacity(graph.edge_bound());
-        let covalent =
-            EdgeFiltered::from_fn(graph, |edge| edge.weight().order != BondOrder::Dative);
-        for edge in graph
-            .edge_indices()
-            .filter(|&edge| graph[edge].order != BondOrder::Dative)
-        {
-            ring_bonds.insert(edge.index());
-        }
-        for edge in bridges(&covalent) {
-            ring_bonds.remove(edge.id().index());
-        }
+        let ring_bonds = self.covalent_ring_bonds();
 
         // per atom, by node index: current identifier, and the bonds its environment covers
         let mut ids = vec![0u64; graph.node_bound()];
