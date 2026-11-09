@@ -17,12 +17,21 @@ impl Molecule {
                     atom.charge,
                 )
             };
+            if atom.element.atomic_number != 0
+                && i16::from(atom.charge) > i16::from(atom.element.atomic_number)
+            {
+                return Err(format!("{}: charge exceeds atomic number", context()));
+            }
+            let valence = self.input_valences[node.index()];
+            // An isolated cation has no bonding valence to limit, even across closed shells.
+            if atom.charge > 0 && valence == 0 && self.graph.edges(node).next().is_none() {
+                continue;
+            }
             let Some(maximum) = maximum_valence(atom.element.atomic_number, atom.charge)
                 .map_err(|()| format!("{}: unsupported charge state", context()))?
             else {
                 continue;
             };
-            let valence = self.input_valences[node.index()];
             if valence > u16::from(maximum) {
                 return Err(format!(
                     "{}: valence {valence} exceeds maximum {maximum}",
@@ -110,7 +119,7 @@ fn maximum_valence(element: u8, charge: i8) -> Result<Option<u8>, ()> {
         4 | 8 => 2,
         5 | 7 | 13 | 31 | 49 => 3,
         6 | 14 | 32 | 50 => 4,
-        9 | 17 | 35 => 1,
+        3 | 9 | 17 | 35 => 1,
         15 | 33 | 51 | 53 => 5,
         16 | 34 | 52 => 6,
         _ => return Err(()),

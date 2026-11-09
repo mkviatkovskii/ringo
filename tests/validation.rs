@@ -66,6 +66,54 @@ fn valence_is_optional_and_accounts_for_charge_and_hydrogens() {
 }
 
 #[test]
+fn ordinary_cations_do_not_require_a_same_period_valence_table_entry() {
+    for smiles in [
+        "[B+3]",
+        "[Si+4]",
+        "[As+3]",
+        "[As+5]",
+        "[Se+4]",
+        "[Se+6]",
+        "[Si+2]",
+        "[C+4]",
+        "[O+6]",
+        "[P+3]",
+        "[P+5]",
+        "[S+4]",
+        "[S+6]",
+        "[C+6]",
+        "[12C+4]",
+        "[82Se+6]",
+        "[Se+4].[Cl-].[Cl-].[Cl-].[Cl-]",
+        "[H][B+2]",
+        "[B+2][B+2]",
+    ] {
+        let molecule = parse_molecule(smiles).unwrap().1;
+        let before = molecule.ecfp(2, 512).to_bytes();
+        molecule
+            .validate()
+            .unwrap_or_else(|error| panic!("{smiles}: {error}"));
+        assert_eq!(molecule.ecfp(2, 512).to_bytes(), before, "{smiles}");
+    }
+    for smiles in [
+        "[C+7]",
+        "[Si+15]",
+        "[N+127]",
+        "[Fe+27]",
+        "[H+2]",
+        "[N-46]",
+        "[Si+4]C",
+        "[Si+4]->[Cu]",
+        "[B+2](F)F",
+    ] {
+        assert!(
+            parse_molecule(smiles).unwrap().1.validate().is_err(),
+            "{smiles}"
+        );
+    }
+}
+
+#[test]
 fn aromatic_and_dative_valence_keep_supported_spellings() {
     for smiles in [
         "c1ccccc1",
