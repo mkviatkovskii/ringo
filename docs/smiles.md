@@ -187,8 +187,24 @@ atom classes, aromaticity, bond orders, dative bonds and stereo.
   configurations that `/` and `\` can't mark in that order, and more than 99 open
   rings.
 
-This is the first part of canonical SMILES
-([#63](https://github.com/mkviatkovskii/ringo/issues/63)); canonical ranking comes next.
+The graph-ranking stage of [#63](https://github.com/mkviatkovskii/ringo/issues/63)
+is available through `canonical::canonical_smiles(&molecule)`. It sorts atom
+invariants, refines neighbour partitions and searches unresolved ties, retaining
+the smallest written result. Matching leaf outputs reveal automorphisms; their
+generators prune equivalent branches only when they preserve the current partition.
+No platform-dependent hashes are used.
+
+`ringo-canonical <smiles_file>` writes one canonical SMILES per nonblank record;
+use `-` for stdin. Record names are omitted. Parsing or canonicalization errors
+report the line number and exit unsuccessfully. `--search-limit` sets the maximum
+search nodes per molecule (default 100,000). Exhaustion returns `SearchLimit`,
+never a provisional result. The library also exposes `canonical_smiles_with_limit`.
+
+This is not yet the complete molecular identity implementation from #63. Stereo
+annotations are preserved and participate in leaf comparison, but stereo-aware
+partition refinement and removal of impossible or interacting stereo marks remain
+unimplemented. Large ChEMBL order-independence, idempotence, RDKit comparison,
+exact-matcher oracle and throughput acceptance runs remain outstanding.
 
 ## Known gaps
 
@@ -197,7 +213,7 @@ This is the first part of canonical SMILES
 - Tilde (`~`) bonds and extended ring labels such as `%(100)`.
 - Some directional/aromatic ring cases; the current parser rejects these rather
   than discarding their stereo annotations.
-- CIP assignment and canonical SMILES; the writer above writes a given order.
+- CIP assignment and complete stereo normalization in canonical SMILES.
 
 [Issue #8](https://github.com/mkviatkovskii/ringo/issues/8) records corpus coverage
 and remaining cases. Further core syntax/stereo work is tracked in

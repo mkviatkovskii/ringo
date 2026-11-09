@@ -246,6 +246,10 @@ impl<'a> Writer<'a> {
 
     /// Picks `/` and `\` bonds for every double-bond configuration, then checks that the
     /// reader gets the same configurations, and no others, back from them.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "direction selection and parity constraints form one checked assignment"
+    )]
     fn assign_directions(&mut self) -> Result<(), WriteError> {
         let molecule = self.molecule;
         if molecule.bond_stereo.is_empty() {
