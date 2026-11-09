@@ -5,6 +5,33 @@ use petgraph::visit::{EdgeRef, IntoEdgeReferences};
 use std::collections::hash_map::Entry;
 use std::collections::{HashMap, HashSet, VecDeque};
 
+/// What Hückel counting needs to know about the rings an atom is in.
+struct RingContext {
+    /// Bonds in any ring.
+    bonds: HashSet<EdgeIndex>,
+    /// Size of the smallest ring through each ring atom.
+    smallest: HashMap<NodeIndex, usize>,
+}
+
+impl RingContext {
+    fn new(molecule: &Molecule, rings: &[Vec<NodeIndex>]) -> RingContext {
+        let mut smallest: HashMap<NodeIndex, usize> = HashMap::new();
+        for ring in rings {
+            for &node in ring {
+                let size = smallest.entry(node).or_insert(ring.len());
+                *size = (*size).min(ring.len());
+            }
+        }
+        RingContext {
+            bonds: rings
+                .iter()
+                .flat_map(|ring| molecule.ring_edges(ring))
+                .collect(),
+            smallest,
+        }
+    }
+}
+
 impl Molecule {
     /// Marks every ring that obeys Hückel's rule (4n+2 π electrons) as aromatic: its
     /// atoms aromatic, its bonds `Aromatic`. A ring written in lowercase, or with `:`
@@ -13,15 +40,12 @@ impl Molecule {
     /// whether it was written in Kekulé form ("C1=CC=CC=C1") or aromatic form ("c1ccccc1").
     pub fn perceive_aromaticity(&mut self) {
         let rings = self.rings();
-        let ring_bonds: HashSet<EdgeIndex> = rings
-            .iter()
-            .flat_map(|ring| self.ring_edges(ring))
-            .collect();
+        let context = RingContext::new(self, &rings);
 
         // aromatic by itself, so all its bonds are aromatic
         let mut alone: Vec<bool> = rings
             .iter()
-            .map(|ring| self.huckel(ring.iter().copied(), &ring_bonds))
+            .map(|ring| self.huckel(ring.iter().copied(), &context))
             .collect();
         let mut aromatic = alone.clone();
         // fused pairs such as azulene (5 + 7 atoms) are aromatic only around the
@@ -41,7 +65,7 @@ impl Molecule {
                     continue;
                 };
                 let union: HashSet<NodeIndex> = rings[i].iter().chain(&rings[j]).copied().collect();
-                if self.huckel(union.into_iter(), &ring_bonds) {
+                if self.huckel(union.into_iter(), &context) {
                     aromatic[i] = true;
                     aromatic[j] = true;
                     shared_bonds
@@ -88,14 +112,10 @@ impl Molecule {
     }
 
     /// Whether these atoms hold 4n+2 π electrons, each of them giving some.
-    fn huckel(
-        &self,
-        atoms: impl Iterator<Item = NodeIndex>,
-        ring_bonds: &HashSet<EdgeIndex>,
-    ) -> bool {
+    fn huckel(&self, atoms: impl Iterator<Item = NodeIndex>, context: &RingContext) -> bool {
         let mut electrons = 0;
         for node in atoms {
-            match self.pi_electrons(node, ring_bonds) {
+            match self.pi_electrons(node, context) {
                 Some(count) => electrons += count,
                 None => return false,
             }
@@ -105,13 +125,13 @@ impl Molecule {
 
     /// π electrons an atom gives to an aromatic ring, or None when it cannot be in one
     /// (an sp3 carbon such as the CH2 of cyclopentadiene).
-    fn pi_electrons(&self, node: NodeIndex, ring_bonds: &HashSet<EdgeIndex>) -> Option<u32> {
+    fn pi_electrons(&self, node: NodeIndex, context: &RingContext) -> Option<u32> {
         let atom = &self.graph[node];
         let mut ring_double = false;
         let mut ring_aromatic = false;
         let mut exocyclic_double = None;
         for edge in self.graph.edges(node) {
-            let in_ring = ring_bonds.contains(&edge.id());
+            let in_ring = context.bonds.contains(&edge.id());
             match edge.weight().order {
                 BondOrder::Triple => return None,
                 BondOrder::Double if in_ring => ring_double = true,
@@ -148,6 +168,10 @@ impl Molecule {
         match (atom.element.atomic_number, atom.charge) {
             // a lone pair: pyrrole's N, furan's O, thiophene's S
             (7 | 15, 0) if neighbours == 3 => Some(2),
+            // but a neutral O or S between two single bonds only bridges a macrocycle
+            // (9 or more atoms, as in RDKit since 2026.09, rdkit/rdkit#9398): the
+            // lactone ring of CHEMBL2004566 keeps its C=N double bond
+            (8 | 16, 0) if neighbours == 2 && context.smallest.get(&node) >= Some(&9) => None,
             (7, -1) | (8 | 16 | 34 | 52, 0) if neighbours == 2 => Some(2),
             // the cyclopentadienyl anion, and an empty p orbital: tropylium, boron
             (6, -1) => Some(2),
@@ -185,6 +209,15 @@ impl Molecule {
             }
         }
         rings
+    }
+
+    /// Whether a covalent bond lies on a ring of covalent bonds.
+    pub(crate) fn is_ring_bond(&self, edge: EdgeIndex) -> bool {
+        let Some((a, b)) = self.graph.edge_endpoints(edge) else {
+            return false;
+        };
+        self.graph[edge].order != BondOrder::Dative
+            && self.shortest_path_without(a, b, edge).is_some()
     }
 
     /// Breadth-first search from `from` to `to` that may not use `skip`; the path
@@ -272,6 +305,28 @@ mod tests {
             "C=C1C=CC=C1",
         ] {
             assert!(aromatic_atoms(smiles).iter().all(|&a| !a), "{smiles}");
+        }
+    }
+
+    #[test]
+    fn test_macrocycle_oxygen_and_sulfur_bridges_give_no_electrons() {
+        // oxonin and thionin: 10 by a naive count, but the O or S only bridges a 9-ring
+        for smiles in [
+            "C1=CC=CC=COC=C1",
+            "C1=CC=CC=CSC=C1",
+            "O=C1NC=CC(=O)OC(C)=NC=C1",
+        ] {
+            assert!(aromatic_atoms(smiles).iter().all(|&a| !a), "{smiles}");
+        }
+        // furan, 2-pyrone and azonine keep their donors; written aromatic stays aromatic
+        for (smiles, ring) in [
+            ("C1=COC=C1", 5),
+            ("O=C1OC=CC=C1", 6),
+            ("C1=CC=CC=C[NH]C=C1", 9),
+            ("c1ccccoccc1", 9),
+        ] {
+            let count = aromatic_atoms(smiles).iter().filter(|&&a| a).count();
+            assert_eq!(count, ring, "{smiles}");
         }
     }
 

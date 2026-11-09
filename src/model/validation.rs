@@ -1,85 +1,213 @@
 use crate::model::bond::BondOrder;
 use crate::model::molecule::Molecule;
-use petgraph::stable_graph::NodeIndex;
+use petgraph::algo::maximum_matching;
+use petgraph::graph::UnGraph;
+use petgraph::stable_graph::{EdgeIndex, NodeIndex};
+use petgraph::visit::EdgeRef;
+use std::collections::{BTreeMap, HashMap};
 
 impl Molecule {
-    /// Runs optional post-load chemical checks without modifying the molecule.
-    /// Currently checks main-group valence limits, not aromaticity or stereogenicity.
-    /// Errors identify the zero-based atom index and the unsupported charge or excessive valence.
+    /// Runs optional post-load chemical checks without modifying the molecule: main-group
+    /// valence limits, then the written aromatic annotations. Stereogenicity is not checked.
+    /// Errors identify the zero-based atom or bond index and what is wrong there.
     pub fn validate(&self) -> Result<(), String> {
+        self.validate_valences()?;
+        self.validate_aromaticity()
+    }
+
+    fn validate_valences(&self) -> Result<(), String> {
         for node in self.graph.node_indices() {
             let atom = &self.graph[node];
-            let context = || {
-                format!(
-                    "atom {} (atomic number {}, charge {})",
-                    node.index(),
-                    atom.element.atomic_number,
-                    atom.charge,
-                )
-            };
             if atom.element.atomic_number != 0
                 && i16::from(atom.charge) > i16::from(atom.element.atomic_number)
             {
-                return Err(format!("{}: charge exceeds atomic number", context()));
+                return Err(format!(
+                    "{}: charge exceeds atomic number",
+                    self.describe(node)
+                ));
             }
-            let valence = self.input_valences[node.index()];
+            let valence = self.written_valence(node) + u32::from(self.needs_ring_pi(node));
             // An isolated cation has no bonding valence to limit, even across closed shells.
             if atom.charge > 0 && valence == 0 && self.graph.edges(node).next().is_none() {
                 continue;
             }
             let Some(maximum) = maximum_valence(atom.element.atomic_number, atom.charge)
-                .map_err(|()| format!("{}: unsupported charge state", context()))?
+                .map_err(|()| format!("{}: unsupported charge state", self.describe(node)))?
             else {
                 continue;
             };
             if valence > u32::from(maximum) {
                 return Err(format!(
                     "{}: valence {valence} exceeds maximum {maximum}",
-                    context()
+                    self.describe(node)
                 ));
             }
         }
         Ok(())
     }
 
+    /// `OpenSMILES` requires that electrons can be assigned to the atoms and bonds written
+    /// aromatic, consistent with their hydrogens, charges and external bonds. Ringo checks
+    /// that every aromatic atom is in a ring, and that the atoms needing a ring π bond pair
+    /// up along aromatic ring bonds: a Kekulé structure exists. An aromatic bond outside
+    /// rings, like `c1ccccc1:c1ccccc1`'s link, is single, as loading reads it. Hückel's rule
+    /// is not required: `OpenSMILES` also writes anti-aromatic rings in lowercase.
+    fn validate_aromaticity(&self) -> Result<(), String> {
+        let aromatic: Vec<NodeIndex> = self
+            .graph
+            .node_indices()
+            .filter(|&node| self.aromatic_as_written(node))
+            .collect();
+        let mut ring_bonds: BTreeMap<EdgeIndex, bool> = BTreeMap::new();
+        for &node in &aromatic {
+            let mut in_ring = false;
+            for edge in self.graph.edges(node) {
+                let ring_bond = *ring_bonds
+                    .entry(edge.id())
+                    .or_insert_with(|| self.is_ring_bond(edge.id()));
+                let other = if edge.source() == node {
+                    edge.target()
+                } else {
+                    edge.source()
+                };
+                if ring_bond && self.graph[other].element.atomic_number == 0 {
+                    return Err(format!(
+                        "{}: a wildcard atom in an aromatic ring is not supported",
+                        self.describe(node)
+                    ));
+                }
+                in_ring |= ring_bond;
+            }
+            if !in_ring {
+                return Err(format!(
+                    "{}: aromatic atom outside a ring",
+                    self.describe(node)
+                ));
+            }
+        }
+
+        // a perfect matching of the atoms that need a ring π bond is a Kekulé structure
+        let mut pairing: UnGraph<NodeIndex, ()> = UnGraph::default();
+        let mut index = HashMap::new();
+        for &node in aromatic.iter().filter(|&&node| self.needs_ring_pi(node)) {
+            index.insert(node, pairing.add_node(node));
+        }
+        for (&edge, _) in ring_bonds.iter().filter(|&(_, &ring_bond)| ring_bond) {
+            if self.written_order(edge) != BondOrder::Aromatic {
+                continue;
+            }
+            let Some((a, b)) = self.graph.edge_endpoints(edge) else {
+                continue;
+            };
+            if let (Some(&a), Some(&b)) = (index.get(&a), index.get(&b)) {
+                pairing.add_edge(a, b, ());
+            }
+        }
+        let matching = maximum_matching(&pairing);
+        if let Some(unpaired) = pairing
+            .node_indices()
+            .find(|&node| !matching.contains_node(node))
+        {
+            return Err(format!(
+                "{}: its aromatic system has no Kekulé structure; check its hydrogens, \
+                 charges and external bonds",
+                self.describe(pairing[unpaired])
+            ));
+        }
+        Ok(())
+    }
+
+    fn describe(&self, node: NodeIndex) -> String {
+        let atom = &self.graph[node];
+        format!(
+            "atom {} (atomic number {}, charge {})",
+            node.index(),
+            atom.element.atomic_number,
+            atom.charge,
+        )
+    }
+
+    /// Bond valence from the current bond orders, as the loader computes hydrogens.
     pub(crate) fn bond_valence(&self, node: NodeIndex) -> u32 {
         self.graph
             .edges(node)
-            .map(|edge| match edge.weight().order {
-                BondOrder::Dative => u32::from(edge.weight().donor != Some(node)),
-                BondOrder::Single | BondOrder::Aromatic => 1,
-                BondOrder::Double => 2,
-                BondOrder::Triple => 3,
-            })
+            .map(|edge| order_valence(edge.weight().order, edge.weight().donor, node))
             .sum()
     }
 
-    pub(crate) fn record_valences(&mut self) {
-        self.input_valences = self
+    pub(crate) fn record_input(&mut self) {
+        self.input_aromatic = self
             .graph
             .node_indices()
-            .map(|node| {
-                let atom = &self.graph[node];
-                let valence =
-                    self.bond_valence(node) + u32::from(atom.hs) + u32::from(atom.implicit_hs);
-                let aromatic = self
-                    .graph
-                    .edges(node)
-                    .any(|e| e.weight().order == BondOrder::Aromatic);
-                let has_pi_bond = self
-                    .graph
-                    .edges(node)
-                    .any(|e| matches!(e.weight().order, BondOrder::Double | BondOrder::Triple));
-                // Lone-pair donors and empty p orbitals do not need an extra ring bond order.
-                let donor_or_empty = match (atom.element.atomic_number, atom.charge) {
-                    (5 | 8 | 16 | 34, 0) | (6, -1 | 1) | (7, -1) => true,
-                    (7 | 15 | 33, 0) => valence == 3,
-                    _ => false,
-                };
-                let pi = u32::from(aromatic && !has_pi_bond && !donor_or_empty);
-                valence + pi
-            })
+            .map(|node| self.graph[node].aromatic)
             .collect();
+        self.input_orders = self
+            .graph
+            .edge_indices()
+            .map(|edge| self.graph[edge].order)
+            .collect();
+    }
+
+    fn written_order(&self, edge: EdgeIndex) -> BondOrder {
+        self.input_orders[edge.index()]
+    }
+
+    /// Written bonds and hydrogens, an aromatic bond counting one.
+    fn written_valence(&self, node: NodeIndex) -> u32 {
+        let atom = &self.graph[node];
+        self.graph
+            .edges(node)
+            .map(|edge| order_valence(self.written_order(edge.id()), edge.weight().donor, node))
+            .sum::<u32>()
+            + u32::from(atom.hs)
+            + u32::from(atom.implicit_hs)
+    }
+
+    /// Written in lowercase, or with an aromatic bond.
+    fn aromatic_as_written(&self, node: NodeIndex) -> bool {
+        self.input_aromatic[node.index()]
+            || self
+                .graph
+                .edges(node)
+                .any(|edge| self.written_order(edge.id()) == BondOrder::Aromatic)
+    }
+
+    /// Whether an aromatic atom needs one of its aromatic bonds to be double, like
+    /// benzene's carbons and pyridine's nitrogen. Lone-pair donors (pyrrole's NH, furan's O),
+    /// empty p orbitals (boron, tropylium) and atoms with a written double or triple bond
+    /// (2-pyridone's C=O carbon) do not.
+    fn needs_ring_pi(&self, node: NodeIndex) -> bool {
+        if !self.aromatic_as_written(node)
+            || self.graph.edges(node).any(|edge| {
+                matches!(
+                    self.written_order(edge.id()),
+                    BondOrder::Double | BondOrder::Triple
+                )
+            })
+        {
+            return false;
+        }
+        let atom = &self.graph[node];
+        let donor_or_empty = match (atom.element.atomic_number, atom.charge) {
+            // a lone pair with two neighbours: furan's O, pyrrolide's N-
+            (8 | 16 | 34 | 52, 0) | (7, -1) => true,
+            // with three neighbours, a lone pair (pyrrole's NH, cyclopentadienide's CH-)
+            // or an empty p orbital (borole's B, tropylium's CH+); borabenzene's B
+            // with two needs a ring double bond, like pyridine's N
+            (5 | 7 | 15 | 33, 0) | (6, -1 | 1) => self.written_valence(node) == 3,
+            _ => false,
+        };
+        !donor_or_empty
+    }
+}
+
+/// The valence a bond of this order gives `node`: a dative bond counts at its acceptor only.
+fn order_valence(order: BondOrder, donor: Option<NodeIndex>, node: NodeIndex) -> u32 {
+    match order {
+        BondOrder::Dative => u32::from(donor != Some(node)),
+        BondOrder::Single | BondOrder::Aromatic => 1,
+        BondOrder::Double => 2,
+        BondOrder::Triple => 3,
     }
 }
 

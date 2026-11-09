@@ -318,7 +318,7 @@ fn finish_molecule(
             atom.implicit_hs = hs;
         }
     }
-    molecule.record_valences();
+    molecule.record_input();
     // after the hydrogens: perception moves electrons around, not hydrogens
     molecule.perceive_aromaticity();
 

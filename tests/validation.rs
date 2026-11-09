@@ -147,6 +147,56 @@ fn aromatic_and_dative_valence_keep_supported_spellings() {
 }
 
 #[test]
+fn aromatic_annotations_need_a_ring_and_a_kekule_structure() {
+    for smiles in [
+        "c1ccccc1",
+        "c1ccc2ccccc2c1",
+        "c1ccc2cccc2cc1",   // azulene
+        "c1ccc-2cccc-2cc1", // azulene with its shared bond written single
+        "c1ccc2[nH]ccc2c1",
+        "c1ccn2cccc2c1", // indolizine: the bridgehead N gives a lone pair
+        "Cn1c(=O)c2c(ncn2C)n(C)c1=O", // caffeine: exocyclic C=O carbons need no ring π bond
+        "O=c1cccc[nH]1",
+        "[cH-]1cccc1",
+        "[cH+]1cccccc1",
+        "b1ccccc1",  // borabenzene: B=C in its Kekulé structure
+        "B1C=CC=C1", // borole
+        "[bH]1cccc1",
+        "c1cc[o+]cc1",
+        "[se]1cccc1",
+        "[te]1cccc1",
+        "c1cc[n+]([O-])cc1",
+        "c1ccc1", // anti-aromatic, but OpenSMILES writes it in lowercase
+        "C1:C:C:C:C:C1",
+        "c1ccccc1-c1ccccc1",
+        "c1ccccc1c1ccccc1", // an aromatic bond outside rings is single
+        "*c1ccccc1",
+        "O=C1Nc2ccccc2C(=O)O/C(Cc2ccccc2)=N\\c2ccccc21", // CHEMBL2004566
+    ] {
+        let molecule = parse_molecule(smiles).unwrap().1;
+        molecule
+            .validate()
+            .unwrap_or_else(|error| panic!("{smiles}: {error}"));
+    }
+    for (smiles, error) in [
+        ("c1cccc1", "no Kekulé structure"), // cyclopentadiene's CH2 written as c
+        ("c1ccnc1", "no Kekulé structure"), // pyrrole without its NH
+        ("c1cc[nH]cc1", "no Kekulé structure"), // pyridine with an NH
+        ("C=c1ccccc1", "no Kekulé structure"), // an exocyclic C=C takes one ring electron
+        ("c1cccc1c1cccc1", "no Kekulé structure"), // the link is single, not a C=C
+        ("CccccC", "aromatic atom outside a ring"),
+        ("c1ccccc1:C", "aromatic atom outside a ring"),
+        ("c", "aromatic atom outside a ring"),
+        ("c1cc*cc1", "wildcard atom in an aromatic ring"),
+    ] {
+        let molecule = parse_molecule(smiles).unwrap().1;
+        let message = molecule.validate().unwrap_err();
+        assert!(message.contains(error), "{smiles}: {message}");
+        assert!(message.starts_with("atom "), "{smiles}: {message}");
+    }
+}
+
+#[test]
 fn loading_always_checks_syntax_and_arithmetic() {
     let overflow = format!("C{}", "(C)".repeat(256));
     let bracket_overflow = format!("[C]{}", "(C)".repeat(256));
