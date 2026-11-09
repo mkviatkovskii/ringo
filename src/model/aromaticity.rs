@@ -4,7 +4,7 @@ use fixedbitset::FixedBitSet;
 use petgraph::algo::bridges;
 use petgraph::stable_graph::{EdgeIndex, NodeIndex};
 use petgraph::visit::{EdgeFiltered, EdgeIndexable, EdgeRef, IntoEdgeReferences, NodeIndexable};
-use std::collections::{HashSet, VecDeque};
+use std::collections::HashSet;
 
 impl Molecule {
     /// Marks every ring that obeys Hückel's rule (4n+2 π electrons) as aromatic: its
@@ -182,13 +182,20 @@ impl Molecule {
     fn rings(&self, ring_bonds: &FixedBitSet) -> Vec<Vec<NodeIndex>> {
         let mut seen: HashSet<Vec<NodeIndex>> = HashSet::new();
         let mut rings = Vec::new();
+        let mut parent = vec![None; self.graph.node_bound()];
+        let mut queue = Vec::new();
         for edge in (&self.graph)
             .edge_references()
             .filter(|edge| ring_bonds.contains(edge.id().index()))
         {
-            let Some(ring) =
-                self.shortest_path_without(edge.source(), edge.target(), edge.id(), ring_bonds)
-            else {
+            let Some(ring) = self.shortest_path_without(
+                edge.source(),
+                edge.target(),
+                edge.id(),
+                ring_bonds,
+                &mut parent,
+                &mut queue,
+            ) else {
                 continue;
             };
             let mut key = ring.clone();
@@ -208,16 +215,26 @@ impl Molecule {
         to: NodeIndex,
         skip: EdgeIndex,
         ring_bonds: &FixedBitSet,
+        parent: &mut [Option<NodeIndex>],
+        queue: &mut Vec<NodeIndex>,
     ) -> Option<Vec<NodeIndex>> {
-        let mut parent = vec![None; self.graph.node_bound()];
+        // Retain every queued node, including those left at an early return, so
+        // the next search clears only the parent entries this search touched.
+        for node in queue.drain(..) {
+            parent[node.index()] = None;
+        }
         parent[from.index()] = Some(from);
-        let mut queue = VecDeque::from([from]);
-        while let Some(node) = queue.pop_front() {
+        queue.push(from);
+        let mut head = 0;
+        while head < queue.len() {
+            let node = queue[head];
+            head += 1;
             if node == to {
                 let mut path = vec![to];
                 let mut current = to;
                 while current != from {
-                    current = parent[current.index()]?;
+                    current = parent[current.index()]
+                        .unwrap_or_else(|| panic!("visited node has a parent"));
                     path.push(current);
                 }
                 return Some(path);
@@ -234,7 +251,7 @@ impl Molecule {
                 };
                 if parent[next.index()].is_none() {
                     parent[next.index()] = Some(node);
-                    queue.push_back(next);
+                    queue.push(next);
                 }
             }
         }
@@ -247,6 +264,7 @@ mod tests {
     use crate::io::smiles::reader::molecule::parse_molecule;
     use crate::math::similarity::tanimoto::tanimoto_bitset;
     use crate::model::bond::BondOrder;
+    use petgraph::stable_graph::NodeIndex;
 
     fn aromatic_atoms(smiles: &str) -> Vec<bool> {
         let m = parse_molecule(smiles).unwrap().1;
@@ -307,6 +325,45 @@ mod tests {
             molecule.graph.node_weights().filter(|a| a.aromatic).count(),
             6
         );
+    }
+
+    #[test]
+    fn test_ring_search_reuses_buffers_across_spiro_and_disconnected_rings() {
+        let molecule = parse_molecule("C1CC12CC2.C1CC1").unwrap().1;
+        let mut rings: Vec<Vec<usize>> = molecule
+            .rings(&molecule.covalent_ring_bonds())
+            .into_iter()
+            .map(|ring| {
+                let mut atoms: Vec<usize> = ring.into_iter().map(NodeIndex::index).collect();
+                atoms.sort_unstable();
+                atoms
+            })
+            .collect();
+        rings.sort_unstable();
+        assert_eq!(rings, vec![vec![0, 1, 2], vec![2, 3, 4], vec![5, 6, 7]]);
+    }
+
+    #[test]
+    fn test_dative_cycle_closures_do_not_create_covalent_ring_bonds() {
+        for (smiles, expected_bonds, expected_rings) in [
+            ("N->1CC[Cu]1", 0, 0),
+            ("N1C=CC=C->[B]<-1", 0, 0),
+            ("N->1CC[Cu]1.c1ccccc1", 6, 1),
+        ] {
+            let molecule = parse_molecule(smiles).unwrap().1;
+            let ring_bonds = molecule.covalent_ring_bonds();
+            assert_eq!(ring_bonds.count_ones(..), expected_bonds, "{smiles}");
+            assert_eq!(
+                molecule.rings(&ring_bonds).len(),
+                expected_rings,
+                "{smiles}"
+            );
+            for edge in molecule.graph.edge_indices() {
+                if molecule.graph[edge].order == BondOrder::Dative {
+                    assert!(!ring_bonds.contains(edge.index()), "{smiles}");
+                }
+            }
+        }
     }
 
     #[test]
