@@ -14,7 +14,7 @@ pub struct SearchResult {
     pub similarity: f32,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, clap::ValueEnum)]
 pub enum SearchMode {
     /// The `limit` most similar records, best first.
     Best,

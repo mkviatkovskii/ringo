@@ -143,10 +143,10 @@ fn cli_validation_runs_after_loading_only_when_requested() {
     .unwrap();
     for validate in [false, true] {
         let mut index = Command::new(env!("CARGO_BIN_EXE_ringo-index"));
-        index.args([filename, "2", "512", "2"]);
         if validate {
             index.arg("--validate");
         }
+        index.args([filename, "2", "512", "2"]);
         let output = index.output().unwrap();
         assert!(output.status.success(), "{output:?}");
         let expected_skipped = if validate { 2 } else { 1 };
@@ -157,10 +157,10 @@ fn cli_validation_runs_after_loading_only_when_requested() {
         );
         for query in ["CCO", invalid] {
             let mut search = Command::new(env!("CARGO_BIN_EXE_ringo-search"));
-            search.args([filename, query, "0", "10"]);
             if validate {
                 search.arg("--validate");
             }
+            search.args([filename, query, "0", "10"]);
             let output = search.output().unwrap();
             if validate && query == invalid {
                 assert!(!output.status.success(), "{output:?}");

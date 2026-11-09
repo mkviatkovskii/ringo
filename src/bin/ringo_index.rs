@@ -1,28 +1,46 @@
+use clap::{CommandFactory, Parser};
 use ringo::db::index::{index_file_with_options, IndexOptions, DEFAULT_BATCH_LINES};
 use ringo::db::index_header::IndexHeader;
 use std::process::ExitCode;
 
-const USAGE: &str =
-    "usage: ringo-index <smiles_file> [radius=2] [bits=512] [batch_lines=65536] [--validate]";
+#[derive(Parser)]
+#[command(
+    name = "ringo-index",
+    version,
+    about = "Build an ECFP index from a SMILES file"
+)]
+struct Cli {
+    /// File containing one SMILES record per line
+    smiles_file: String,
+    /// Fingerprint radius
+    #[arg(default_value_t = 2)]
+    radius: usize,
+    /// Fingerprint length, a positive multiple of 64
+    #[arg(default_value_t = 512)]
+    bits: usize,
+    /// Records processed per batch
+    #[arg(default_value_t = DEFAULT_BATCH_LINES,
+        value_parser = clap::builder::RangedU64ValueParser::<usize>::new().range(1..))]
+    batch_lines: usize,
+    /// Validate each loaded molecule before fingerprinting; skip failed records
+    #[arg(long)]
+    validate: bool,
+}
 
 fn main() -> ExitCode {
-    let args: Vec<String> = std::env::args().skip(1).collect();
-    let Some((smiles_file, radius, bits, batch_lines, validate)) = parse_args(&args) else {
-        eprintln!("{USAGE}");
-        return ExitCode::from(2);
-    };
-    // bad parameters are a usage error (exit 2), not a failed run
-    if let Err(e) = IndexHeader::new(radius, bits) {
-        eprintln!("{e}\n{USAGE}");
-        return ExitCode::from(2);
+    let args = Cli::parse();
+    if let Err(error) = IndexHeader::new(args.radius, args.bits) {
+        Cli::command()
+            .error(clap::error::ErrorKind::ValueValidation, error)
+            .exit();
     }
     match index_file_with_options(
-        smiles_file,
+        &args.smiles_file,
         IndexOptions {
-            radius,
-            bits,
-            batch_lines,
-            validate,
+            radius: args.radius,
+            bits: args.bits,
+            batch_lines: args.batch_lines,
+            validate: args.validate,
         },
     ) {
         Ok(skipped) => {
@@ -33,65 +51,49 @@ fn main() -> ExitCode {
             }
             ExitCode::SUCCESS
         }
-        Err(e) => {
-            eprintln!("ringo-index: {e}");
+        Err(error) => {
+            eprintln!("ringo-index: {error}");
             ExitCode::FAILURE
         }
     }
 }
 
-fn parse_args(args: &[String]) -> Option<(&str, usize, usize, usize, bool)> {
-    let validate = args.last().is_some_and(|s| s == "--validate");
-    let args = &args[..args.len() - usize::from(validate)];
-    if args.is_empty() || args.len() > 4 {
-        return None;
-    }
-    let radius = args.get(1).map_or(Some(2), |s| s.parse().ok())?;
-    let bits = args.get(2).map_or(Some(512), |s| s.parse().ok())?;
-    let batch_lines = args
-        .get(3)
-        .map_or(Some(DEFAULT_BATCH_LINES), |s| s.parse().ok())
-        .filter(|&n| n > 0)?;
-    Some((&args[0], radius, bits, batch_lines, validate))
-}
-
 #[cfg(test)]
 mod tests {
-    use super::parse_args;
-
-    fn args(list: &[&str]) -> Vec<String> {
-        list.iter().map(std::string::ToString::to_string).collect()
-    }
+    use super::Cli;
+    use clap::{CommandFactory, Parser};
 
     #[test]
-    fn test_parse_args() {
+    fn command_arguments() {
+        Cli::command().debug_assert();
+        let defaults = Cli::try_parse_from(["ringo-index", "m.smi"]).unwrap();
         assert_eq!(
-            parse_args(&args(&["m.smi"])),
-            Some(("m.smi", 2, 512, 65_536, false))
+            (
+                defaults.radius,
+                defaults.bits,
+                defaults.batch_lines,
+                defaults.validate
+            ),
+            (2, 512, 65_536, false)
         );
+        let full = Cli::try_parse_from(["ringo-index", "--validate", "m.smi", "3", "1024", "1000"])
+            .unwrap();
         assert_eq!(
-            parse_args(&args(&["m.smi", "3", "1024"])),
-            Some(("m.smi", 3, 1024, 65_536, false))
+            (full.radius, full.bits, full.batch_lines, full.validate),
+            (3, 1024, 1000, true)
         );
-        assert_eq!(
-            parse_args(&args(&["m.smi", "3", "1024", "1000"])),
-            Some(("m.smi", 3, 1024, 1000, false))
+        assert!(
+            Cli::try_parse_from(["ringo-index", "m.smi", "--validate"])
+                .unwrap()
+                .validate
         );
-        assert_eq!(
-            parse_args(&args(&["m.smi", "--validate"])),
-            Some(("m.smi", 2, 512, 65_536, true))
-        );
-        assert_eq!(
-            parse_args(&args(&["m.smi", "3", "1024", "1000", "--validate"])),
-            Some(("m.smi", 3, 1024, 1000, true))
-        );
-        assert_eq!(parse_args(&args(&["--validate"])), None);
-        assert_eq!(parse_args(&args(&[])), None);
-        assert_eq!(parse_args(&args(&["m.smi", "two"])), None);
-        assert_eq!(parse_args(&args(&["m.smi", "2", "512", "0"])), None);
-        assert_eq!(
-            parse_args(&args(&["m.smi", "2", "512", "1000", "extra"])),
-            None
-        );
+        for argv in [
+            vec!["ringo-index"],
+            vec!["ringo-index", "m.smi", "two"],
+            vec!["ringo-index", "m.smi", "2", "512", "0"],
+            vec!["ringo-index", "m.smi", "2", "512", "1000", "extra"],
+        ] {
+            assert!(Cli::try_parse_from(argv).is_err());
+        }
     }
 }

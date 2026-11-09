@@ -50,7 +50,10 @@ ringo-search <smiles_file> <query> <min_similarity> <limit> [max_similarity=1.0]
 The index stores its fingerprint radius and bit count; queries use those same
 parameters. Radius 2 corresponds to ECFP4.
 
-Molecule loading is permissive. Append `--validate` to either command to run the
+Both tools provide `--help` and `--version`; flags may appear before or after
+positional arguments.
+
+Molecule loading is permissive. Add `--validate` to either command to run the
 optional `molecule.validate()` step after loading and before fingerprinting.
 Indexing skips failed records; search rejects a query that fails validation.
 Search does not revalidate indexed records, so build the index with `--validate`

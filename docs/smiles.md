@@ -161,7 +161,7 @@ remain permissive; `index_file_with_options` and `similarity_search_with_options
 accept `IndexOptions` and `SearchOptions` with a `validate` field to request that
 separate post-load step before fingerprinting.
 
-Append `--validate` as the last argument to either CLI to select the same step.
+Add `--validate` to either CLI to select the same step; its position is unrestricted.
 Indexing counts validation failures as skipped records and stores empty fingerprints,
 just as for loading failures. Search reports a validation error for an invalid query.
 The search switch checks only the loaded query, not records already in the index.
