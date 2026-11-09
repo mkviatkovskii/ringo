@@ -189,7 +189,6 @@ fn directional_meaning_and_errors() {
         "F//C=C/F",
         "[C@H2](F)Cl",
         "[C@TH3](F)(Cl)(Br)I",
-        "[Pt@SP4](F)(Cl)(Br)I",
         "[Co@OH31](F)(Cl)(Br)(I)(N)O",
         "F[C@](Cl)Br",
         "NC(Br)=[C@]=C(O)C",

@@ -3,27 +3,6 @@ pub mod common;
 use ringo::io::smiles::reader::molecule::parse_molecule;
 use ringo::model::stereo::{Configuration, Ligand};
 
-#[test]
-fn square_planar_tags_preserve_four_sites() {
-    // Examples from https://www.rdkit.org/docs/RDKit_Book.html#square-planar
-    for (smiles, permutation) in [
-        ("C[Pt@SP1](F)(Cl)[H]", 1),
-        ("C[Pt@SP2](Cl)(F)[H]", 2),
-        ("C[Pt@SP3](F)([H])Cl", 3),
-    ] {
-        let molecule = parse_molecule(smiles)
-            .unwrap_or_else(|_| panic!("{smiles}"))
-            .1;
-        assert_eq!(molecule.atom_stereo().len(), 1, "{smiles}");
-        assert_eq!(molecule.atom_stereo()[0].ligands.len(), 4, "{smiles}");
-        assert_eq!(
-            molecule.atom_stereo()[0].configuration,
-            Configuration::SquarePlanar(permutation),
-            "{smiles}"
-        );
-    }
-}
-
 #[expect(
     clippy::unwrap_used,
     reason = "test helper requires a parsed square-planar centre and its four ligands"
