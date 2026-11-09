@@ -1,11 +1,20 @@
+use ringo::db::exact_search::exact_search;
 use ringo::db::search::{similarity_search, SearchMode};
 use std::process::ExitCode;
 
 const USAGE: &str = "usage: ringo-search <smiles_file> <query> <min_similarity> <limit> \
-                     [max_similarity=1.0] [best|first]";
+                     [max_similarity=1.0] [best|first]\n       \
+                     ringo-search --exact <smiles_file> <query>";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.first().map(String::as_str) == Some("--exact") {
+        let [_, smiles_file, query] = args.as_slice() else {
+            eprintln!("{USAGE}");
+            return ExitCode::from(2);
+        };
+        return search_exact(smiles_file, query);
+    }
     let Some(args) = parse_args(&args) else {
         eprintln!("{USAGE}");
         return ExitCode::from(2);
@@ -26,6 +35,27 @@ fn main() -> ExitCode {
     };
     for result in results {
         println!("{:.3}\t{}", result.similarity, result.line.trim_end());
+    }
+    ExitCode::SUCCESS
+}
+
+/// Prints the lines that hold `query`, and on stderr the lines it could not be compared with.
+fn search_exact(smiles_file: &str, query: &str) -> ExitCode {
+    let hits = match exact_search(smiles_file, query) {
+        Ok(hits) => hits,
+        Err(e) => {
+            eprintln!("ringo-search: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    for line in hits.lines {
+        println!("{}", line.trim_end());
+    }
+    for (line, error) in hits.undecided {
+        eprintln!(
+            "ringo-search: could not compare with {}: {error:?}",
+            line.trim_end()
+        );
     }
     ExitCode::SUCCESS
 }

@@ -1,4 +1,5 @@
 //! Whether two molecules are the same, however they were written (#58).
+use crate::descriptors::fingerprints::ecfp::fnv1a;
 use crate::model::bond::{Bond, BondOrder};
 use crate::model::molecule::Molecule;
 use crate::model::stereo::{Configuration, Ligand};
@@ -540,7 +541,89 @@ fn any_mapping(
     Ok(false)
 }
 
+/// Stable code of an atom: its own properties, then its folded twins in sorted order.
+fn atom_code(key: &AtomKey) -> u64 {
+    let twins = key
+        .twins
+        .iter()
+        .flat_map(|(twin, order)| [atom_code(twin), order_code(*order, true)]);
+    fnv1a(
+        [
+            u64::from(key.atomic_number),
+            u64::from(key.isotope),
+            // sign-extend, like the fingerprints
+            i64::from(key.charge).cast_unsigned(),
+            key.hydrogens as u64,
+            u64::from(key.aromatic),
+            key.twins.len() as u64,
+        ]
+        .into_iter()
+        .chain(twins),
+    )
+}
+
+// explicit codes, so reordering BondOrder cannot change stored keys
+fn order_code(order: BondOrder, donor: bool) -> u64 {
+    match order {
+        BondOrder::Single => 1,
+        BondOrder::Double => 2,
+        BondOrder::Triple => 3,
+        BondOrder::Aromatic => 4,
+        BondOrder::Dative if donor => 5,
+        BondOrder::Dative => 6,
+    }
+}
+
 impl Molecule {
+    /// A 64-bit key that molecules `exact_match` calls the same always share, whatever
+    /// their stereo. Atom codes are refined from their neighbours' codes until that splits
+    /// no more atoms, and the key hashes the sorted codes. It depends neither on atom order
+    /// nor on the Rust version, so it can be stored.
+    pub fn exact_key(&self) -> u64 {
+        let (graph, _, datives) = Folded::fold(self);
+        let mut codes: Vec<u64> = graph.node_weights().map(atom_code).collect();
+        let distinct = |codes: &[u64]| {
+            let mut sorted = codes.to_vec();
+            sorted.sort_unstable();
+            sorted.dedup();
+            sorted.len()
+        };
+        let mut classes = distinct(&codes);
+        loop {
+            let next: Vec<u64> = graph
+                .node_indices()
+                .map(|node| {
+                    let mut neighbours: Vec<(u64, u64)> = graph
+                        .edges(node)
+                        .map(|edge| {
+                            let other = if edge.source() == node {
+                                edge.target()
+                            } else {
+                                edge.source()
+                            };
+                            let donor = datives.contains(&(node.index(), other.index()));
+                            (order_code(*edge.weight(), donor), codes[other.index()])
+                        })
+                        .collect();
+                    neighbours.sort_unstable();
+                    fnv1a(
+                        std::iter::once(codes[node.index()])
+                            .chain(neighbours.into_iter().flat_map(|(bond, code)| [bond, code])),
+                    )
+                })
+                .collect();
+            let next_classes = distinct(&next);
+            codes = next;
+            // refining never merges classes, short of a hash collision
+            if next_classes <= classes {
+                break;
+            }
+            classes = next_classes;
+        }
+        codes.sort_unstable();
+        fnv1a(codes)
+    }
+
     /// Whether `other` is the same molecule, however either was written: atom order,
     /// ring-closure digits, Kekulé or aromatic form, hydrogens as atoms or counts. Atoms
     /// must agree on element, isotope, charge, hydrogens and aromaticity, bonds on order

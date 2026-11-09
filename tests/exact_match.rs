@@ -20,7 +20,41 @@ fn same(a: &str, b: &str) -> bool {
         b_molecule.exact_match(&a_molecule).unwrap(),
         "{a} and {b} match one way only"
     );
+    if forward {
+        assert_eq!(
+            a_molecule.exact_key(),
+            b_molecule.exact_key(),
+            "{a} and {b} match but have different keys"
+        );
+    }
     forward
+}
+
+#[test]
+fn keys_ignore_stereo_and_separate_structures() {
+    let key = |smiles| parse(smiles).exact_key();
+    for (a, b) in [
+        ("C[C@@H](C(=O)O)N", "C[C@H](C(=O)O)N"),
+        ("C[C@@H](C(=O)O)N", "CC(N)C(=O)O"),
+        ("F/C=C/F", "F/C=C\\F"),
+        ("NC(Br)=[C@]=C(O)C", "NC(Br)=[C@@]=C(O)C"),
+    ] {
+        assert_eq!(key(a), key(b), "{a} {b}");
+    }
+    for (a, b) in [
+        ("CCO", "COC"),
+        ("C=C", "CC"),
+        ("CC", "C.C"),
+        ("N->[Cu]", "N<-[Cu]"),
+        ("[2H]C", "C"),
+        // alike at every atom's first shell
+        ("C1CCCCC1", "C1CCC1.C1CCC1"),
+        ("CC(C)CC", "CCCCC"),
+    ] {
+        assert_ne!(key(a), key(b), "{a} {b}");
+    }
+    // pins the hash and the refinement: if this changes, existing .key files find nothing
+    assert_eq!(key("CC(=O)O"), 0xedda_6aea_80c8_7eac);
 }
 
 fn assert_same(pairs: &[(&str, &str)]) {
