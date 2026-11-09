@@ -24,18 +24,41 @@ fn run(args: &Cli) -> Result<(), String> {
         ))
     };
     let mut output = io::BufWriter::new(io::stdout().lock());
+    let mut failed = false;
     for (index, line) in input.lines().enumerate() {
         let line = line.map_err(|e| e.to_string())?;
-        if line.trim().is_empty() {
-            continue;
+        let line = line.trim();
+        let (token, name) = line.split_once(char::is_whitespace).unwrap_or((line, ""));
+        let result = if token.is_empty() {
+            Ok(String::new())
+        } else {
+            parse_molecule(token)
+                .map_err(|_| "invalid or unsupported SMILES".to_owned())
+                .and_then(|(_, molecule)| {
+                    canonical_smiles_with_limit(&molecule, args.search_limit)
+                        .map_err(|e| format!("{e:?}"))
+                })
+        };
+        let smiles = match result {
+            Ok(smiles) => smiles,
+            Err(error) => {
+                eprintln!("ringo-canonical: line {}: {error}", index + 1);
+                failed = true;
+                String::new()
+            }
+        };
+        write!(output, "{smiles}").map_err(|e| e.to_string())?;
+        if !name.trim().is_empty() {
+            write!(output, "\t{}", name.trim()).map_err(|e| e.to_string())?;
         }
-        let (_, molecule) =
-            parse_molecule(&line).map_err(|e| format!("line {}: {e:?}", index + 1))?;
-        let smiles = canonical_smiles_with_limit(&molecule, args.search_limit)
-            .map_err(|e| format!("line {}: {e:?}", index + 1))?;
-        writeln!(output, "{smiles}").map_err(|e| e.to_string())?;
+        writeln!(output).map_err(|e| e.to_string())?;
     }
-    output.flush().map_err(|e| e.to_string())
+    output.flush().map_err(|e| e.to_string())?;
+    if failed {
+        Err("one or more records failed".to_owned())
+    } else {
+        Ok(())
+    }
 }
 
 fn main() -> ExitCode {

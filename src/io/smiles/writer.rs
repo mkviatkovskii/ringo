@@ -297,7 +297,9 @@ impl<'a> Writer<'a> {
         let mut marked = vec![false; edges];
         let mut chosen = Vec::new();
         for s in &stereo {
-            for side in 0..2 {
+            let mut sides = [0, 1];
+            sides.sort_by_key(|&side| self.position[s.ends[side].index()]);
+            for side in sides {
                 let (end, partner) = (s.ends[side], s.ends[1 - side]);
                 let best = molecule
                     .graph

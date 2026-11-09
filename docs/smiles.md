@@ -20,6 +20,15 @@ so the 4-ring of biphenylene, `c1ccc2c(c1)-c1ccccc1-2`, is not aromatic although
 its atoms are. Hydrogens are counted before normalization. The molecule graph is exposed read-only
 so external edits cannot leave computed hydrogen or stereo metadata stale.
 
+Reader compatibility change in #69: lowercase atoms alone no longer force every
+connecting ring bond aromatic. Explicit single bonds in biphenylene remain single;
+a regression test checks the two single links and twelve aromatic ring bonds.
+Ring perception considers a shortest ring from both ends of each cyclic bond,
+reuses BFS buffers, and excludes acyclic and dative bonds during traversal. This
+keeps the candidate count bounded by twice the bond count rather than enumerating
+all shortest paths. Selection among more extensive shortest-ring ties remains a
+heuristic; full corpus aromaticity/order-independence checks are still pending.
+
 ## Atom maps and classes
 
 Bracket atoms accept a trailing numeric class/map label, such as `[CH3:12]`,
@@ -192,11 +201,16 @@ is available through `canonical::canonical_smiles(&molecule)`. It sorts atom
 invariants, refines neighbour partitions and searches unresolved ties, retaining
 the smallest written result. Matching leaf outputs reveal automorphisms; their
 generators prune equivalent branches only when they preserve the current partition.
-No platform-dependent hashes are used.
+No platform-dependent hashes are used. Canonicalization consistently rejects all
+SP/TB/OH centres before searching; the plain writer can still preserve their
+original ligand order. A failed writer ordering is skipped while searching other
+orderings; exhausting the search budget still returns an error.
 
-`ringo-canonical <smiles_file>` writes one canonical SMILES per nonblank record;
-use `-` for stdin. Record names are omitted. Parsing or canonicalization errors
-report the line number and exit unsuccessfully. `--search-limit` sets the maximum
+`ringo-canonical <smiles_file>` writes one output line per input line; use `-`
+for stdin. Record names are retained after a tab. Blank records produce blank lines.
+A failed record produces an empty SMILES field (with its name retained), reports
+its line number on stderr, and processing continues. The final exit status is
+unsuccessful if any record failed. `--search-limit` sets the maximum
 search nodes per molecule (default 100,000). Exhaustion returns `SearchLimit`,
 never a provisional result. The library also exposes `canonical_smiles_with_limit`.
 

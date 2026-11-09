@@ -4,6 +4,7 @@
 //! perception of impossible stereo and stereo-aware partition refinement are pending.
 use super::writer::{write, WriteError};
 use crate::model::molecule::Molecule;
+use crate::model::stereo::Configuration;
 use petgraph::stable_graph::NodeIndex;
 use petgraph::visit::{EdgeRef, NodeIndexable};
 use std::collections::BTreeMap;
@@ -32,6 +33,13 @@ pub fn canonical_smiles_with_limit(
     molecule: &Molecule,
     limit: usize,
 ) -> Result<String, CanonicalError> {
+    if molecule
+        .stereo
+        .iter()
+        .any(|s| !matches!(s.configuration, Configuration::Tetrahedral(_)))
+    {
+        return Err(CanonicalError::Write(WriteError::UnsupportedStereo));
+    }
     let nodes: Vec<_> = molecule.graph.node_indices().collect();
     let keys: Vec<_> = nodes
         .iter()
@@ -124,16 +132,12 @@ impl Search<'_> {
     }
 
     // Only automorphisms preserving this partition can prune its children.
-    fn covered(&self, node: NodeIndex, explored: &[NodeIndex], colors: &[usize]) -> bool {
-        let generators: Vec<_> = self
-            .symmetries
-            .iter()
-            .filter(|g| {
-                self.nodes
-                    .iter()
-                    .all(|n| colors[n.index()] == colors[g[n.index()]])
-            })
-            .collect();
+    fn covered(
+        node: NodeIndex,
+        explored: &[NodeIndex],
+        colors: &[usize],
+        generators: &[&Vec<usize>],
+    ) -> bool {
         let mut seen = vec![false; colors.len()];
         let mut stack = vec![node.index()];
         seen[node.index()] = true;
@@ -141,7 +145,7 @@ impl Search<'_> {
             if explored.iter().any(|e| e.index() == n) {
                 return true;
             }
-            for generator in &generators {
+            for generator in generators {
                 let next = generator[n];
                 if !std::mem::replace(&mut seen[next], true) {
                     stack.push(next);
@@ -179,9 +183,23 @@ impl Search<'_> {
             return Ok(smiles);
         };
         let mut best: Option<String> = None;
+        let mut write_error = WriteError::UnsupportedStereo;
         let mut explored = Vec::new();
+        let mut checked_symmetries = 0;
+        let mut preserving = Vec::new();
         for &node in cell {
-            if self.covered(node, &explored, &colors) {
+            for index in checked_symmetries..self.symmetries.len() {
+                if self
+                    .nodes
+                    .iter()
+                    .all(|n| colors[n.index()] == colors[self.symmetries[index][n.index()]])
+                {
+                    preserving.push(index);
+                }
+            }
+            checked_symmetries = self.symmetries.len();
+            let generators: Vec<_> = preserving.iter().map(|&i| &self.symmetries[i]).collect();
+            if Self::covered(node, &explored, &colors, &generators) {
                 continue;
             }
             explored.push(node);
@@ -190,12 +208,19 @@ impl Search<'_> {
                 child[other.index()] *= 2;
             }
             child[node.index()] += 1;
-            let result = self.visit(child)?;
+            let result = match self.visit(child) {
+                Ok(result) => result,
+                Err(CanonicalError::Write(error)) => {
+                    write_error = error;
+                    continue;
+                }
+                Err(error) => return Err(error),
+            };
             if best.as_ref().is_none_or(|previous| result < *previous) {
                 best = Some(result);
             }
         }
-        Ok(best.unwrap_or_default())
+        best.ok_or(CanonicalError::Write(write_error))
     }
 }
 
@@ -210,6 +235,8 @@ mod tests {
     fn spelling_and_idempotence() {
         for group in [
             vec!["CCO", "OCC", "C(O)C"],
+            vec!["CC/C=C/C", "C/C=C/CC"],
+            vec!["CC(C)=CCC/C(C)=C/CO", "OC/C=C(\\C)CCC=C(C)C"],
             vec!["c1ccccc1", "C1=CC=CC=C1", "c2ccccc2"],
             vec!["CC(C)O", "OC(C)C", "C(C)(O)C"],
             vec!["N->[Cu]", "[Cu]<-N"],
@@ -240,7 +267,9 @@ mod tests {
             "CC(C)(C)C",
             "c1ccccc1",
             "C12C3C4C1C5C2C3C45",
-            "N[C](F)C",
+            "N[C@H](F)C",
+            "CC/C=C/C",
+            "CC(C)=CCC/C(C)=C/CO",
             "F/C=C\\F",
             "FC=[C@]=CCl",
             "CC.O.CC",
@@ -271,6 +300,44 @@ mod tests {
             .unwrap()
             .1;
         assert!(canonical_smiles_with_limit(&molecule, 1000).is_ok());
+    }
+
+    #[test]
+    fn repository_stereo_records_have_consistent_support() {
+        for line in include_str!("../../../tests/data/stereo.smi").lines() {
+            let (_, molecule) = parse_molecule(line).unwrap();
+            if molecule
+                .stereo
+                .iter()
+                .any(|s| !matches!(s.configuration, Configuration::Tetrahedral(_)))
+            {
+                assert_eq!(
+                    canonical_smiles(&molecule),
+                    Err(CanonicalError::Write(WriteError::UnsupportedStereo)),
+                    "{line}"
+                );
+            } else {
+                let output =
+                    canonical_smiles(&molecule).unwrap_or_else(|e| panic!("{line}: {e:?}"));
+                assert_eq!(canonical(&output), output, "{line}");
+            }
+        }
+    }
+
+    #[test]
+    fn unsupported_coordination_is_rejected_in_every_order() {
+        for input in [
+            "F[Pt@SP1](Cl)(Br)I",
+            "Cl[Pt@SP1](Br)(I)F",
+            "S[As@TB5](F)(N)(Cl)Br",
+            "O[Mn@OH28](Cl)(C)(N)F",
+        ] {
+            let molecule = parse_molecule(input).unwrap().1;
+            assert_eq!(
+                canonical_smiles(&molecule),
+                Err(CanonicalError::Write(WriteError::UnsupportedStereo))
+            );
+        }
     }
 
     #[test]

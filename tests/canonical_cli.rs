@@ -26,13 +26,22 @@ fn canonicalizes_records_from_stdin() {
     assert!(output.status.success(), "{output:?}");
     let text = String::from_utf8(output.stdout).unwrap();
     let lines: Vec<_> = text.lines().collect();
-    assert_eq!(lines.len(), 3);
-    assert!(lines.iter().all(|line| line == &lines[0]));
+    assert_eq!(lines.len(), 4);
+    assert_eq!(lines[1], "");
+    let (first, name) = lines[0].split_once('\t').unwrap();
+    assert_eq!(name, "first");
+    assert_eq!(lines[2], format!("{first}\tsecond"));
+    assert_eq!(lines[3], format!("{first}\tthird"));
 }
 
 #[test]
 fn invalid_record_reports_line_and_fails() {
-    let output = run("CCO\n\nC(\n", &[]);
+    let output = run("CCO\n\nC( bad\nOCC after\n", &[]);
+    let text = String::from_utf8(output.stdout.clone()).unwrap();
+    let lines: Vec<_> = text.lines().collect();
+    assert_eq!(lines.len(), 4);
+    assert_eq!(lines[2], "\tbad");
+    assert_eq!(lines[3], format!("{}\tafter", lines[0]));
     assert!(!output.status.success());
     assert!(String::from_utf8(output.stderr).unwrap().contains("line 3"));
 }
@@ -41,7 +50,7 @@ fn invalid_record_reports_line_and_fails() {
 fn exhausted_budget_fails_without_a_provisional_result() {
     let output = run("C1CCCCC1\n", &["--search-limit", "1"]);
     assert!(!output.status.success());
-    assert_eq!(output.stdout, Vec::<u8>::new());
+    assert_eq!(output.stdout, b"\n");
     assert!(String::from_utf8(output.stderr)
         .unwrap()
         .contains("SearchLimit"));
