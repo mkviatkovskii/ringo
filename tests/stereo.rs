@@ -201,6 +201,41 @@ fn directional_meaning_and_errors() {
 }
 
 #[test]
+fn macrocyclic_lactone_keeps_its_configured_double_bond() {
+    use ringo::model::bond::BondOrder;
+    for (smiles, plain, aromatic_atoms) in [
+        // CHEMBL2004566, ChEMBL 37 line 2,138,582: the ester O bridges a 10-atom ring
+        // with a naive Hückel count of 10, but the three benzene rings alone are aromatic
+        (
+            "O=C1Nc2ccccc2C(=O)O/C(Cc2ccccc2)=N\\c2ccccc21",
+            "O=C1Nc2ccccc2C(=O)OC(Cc2ccccc2)=Nc2ccccc21",
+            18,
+        ),
+        // the same 10-atom ring, reduced to its conjugated atoms
+        ("O=C1NC=CC(=O)O/C(C)=N\\C=C1", "O=C1NC=CC(=O)OC(C)=NC=C1", 0),
+    ] {
+        let m = parse_molecule(smiles)
+            .unwrap_or_else(|_| panic!("{smiles}"))
+            .1;
+        let [stereo] = m.double_bond_stereo() else {
+            panic!("{smiles}")
+        };
+        assert_eq!(m.get_bond(stereo.bond).unwrap().order, BondOrder::Double);
+        let elements = stereo
+            .ends
+            .map(|end| m.get_atom(end).unwrap().element.atomic_number);
+        assert_eq!(elements, [6, 7], "{smiles}");
+        let aromatic = m.graph().node_weights().filter(|a| a.aromatic).count();
+        assert_eq!(aromatic, aromatic_atoms, "{smiles}");
+        m.validate().unwrap();
+        // the ring is not aromatic because of its constitution, not its stereo marks
+        let p = parse_molecule(plain).unwrap().1;
+        assert_eq!(p.exact_key(), m.exact_key(), "{plain}");
+        assert_eq!(p.ecfp(2, 512).0, m.ecfp(2, 512).0, "{plain}");
+    }
+}
+
+#[test]
 fn indexes_newly_supported_stereo_without_changing_fingerprints() {
     common::assert_search(
         "stereo",
@@ -219,8 +254,9 @@ fn corpus_coverage() {
         let before = std::fs::metadata(&corpus_path).unwrap();
         let mut counts = [0usize; 4];
         let mut examples = Vec::new();
-        let mut validation_failed = 0;
-        let mut validation_examples = Vec::new();
+        // by kind, so valence and aromaticity changes can be reported apart
+        let mut validation_failed: std::collections::BTreeMap<&str, (usize, Vec<String>)> =
+            std::collections::BTreeMap::new();
         for line in std::io::BufReader::new(std::fs::File::open(&corpus_path).unwrap()).lines() {
             let line = line.unwrap();
             let smiles = line.split_whitespace().next().unwrap_or("");
@@ -228,9 +264,18 @@ fn corpus_coverage() {
             let success = match parse_molecule(&line) {
                 Ok((_, molecule)) => {
                     if let Err(error) = molecule.validate() {
-                        validation_failed += 1;
-                        if validation_examples.len() < 10 {
-                            validation_examples.push(format!("{line}: {error}"));
+                        let kind = [
+                            "no Kekulé structure",
+                            "aromatic atom outside a ring",
+                            "wildcard atom in an aromatic ring",
+                        ]
+                        .into_iter()
+                        .find(|kind| error.contains(kind))
+                        .unwrap_or("valence or charge");
+                        let (count, kind_examples) = validation_failed.entry(kind).or_default();
+                        *count += 1;
+                        if kind_examples.len() < 5 {
+                            kind_examples.push(format!("{line}: {error}"));
                         }
                     }
                     true
@@ -249,6 +294,8 @@ fn corpus_coverage() {
             "corpus changed during scan"
         );
         println!("{name}: [plain rejected, plain accepted, stereo rejected, stereo accepted] = {counts:?}; examples={examples:?}");
-        println!("{name}: loaded then failed validation = {validation_failed}; examples={validation_examples:?}");
+        for (kind, (count, kind_examples)) in &validation_failed {
+            println!("{name}: loaded then failed validation ({kind}) = {count}; examples={kind_examples:?}");
+        }
     }
 }

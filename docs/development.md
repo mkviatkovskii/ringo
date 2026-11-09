@@ -36,7 +36,8 @@ RINGO_SMILES_CORPUS=/path/to/smiles cargo +stable test --release --locked --test
 
 The survey loads every record once and reports accepted/rejected counts for plain
 and stereo-marked records, plus the count and examples of loaded molecules that
-fail optional post-load validation. It checks that file size and modification time remain
+fail optional post-load validation, by kind: valence or charge, and each aromaticity
+check. It checks that file size and modification time remain
 unchanged during each scan. A passing survey is not a claim of complete parser
 coverage or chemical validity. The checksum-pinned baseline and complete rejection
 classification are recorded in [issue #8](https://github.com/mkviatkovskii/ringo/issues/8).
@@ -51,4 +52,7 @@ are made once per release. Rebuild development indexes when parser changes admit
 previously skipped records or fingerprint semantics change. Atom class/map labels
 and the addition of dative-bond support leave existing covalent fingerprints unchanged.
 Square-planar and allene/cumulene tags also leave fingerprints unchanged; rebuild
-indexes to include previously rejected SP/AL-tagged records.
+indexes to include previously rejected SP/AL-tagged records. Aromaticity perception
+no longer counts a neutral O/S bridge in a ring of nine or more atoms as a π donor.
+Rebuild indexes: Kekulé-written macrocycles with such bridges change fingerprints,
+and records such as CHEMBL2004566 are now accepted.
