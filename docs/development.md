@@ -46,3 +46,5 @@ Index format remains version 1 for the current development release; version chan
 are made once per release. Rebuild development indexes when parser changes admit
 previously skipped records or fingerprint semantics change. Atom class/map labels
 and the addition of dative-bond support leave existing covalent fingerprints unchanged.
+Square-planar tags also leave fingerprints unchanged; rebuild indexes to include
+previously rejected SP-tagged records.

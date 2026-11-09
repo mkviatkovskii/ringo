@@ -349,6 +349,7 @@ fn finish_molecule(
             ligands.insert(usize::from(has_previous), Ligand::Hydrogen);
         }
         let coordination = match chirality {
+            Chirality::SP(_) => 4,
             Chirality::TB(_) => 5,
             Chirality::OH(_) => 6,
             _ => ligands.len(),
@@ -361,6 +362,7 @@ fn finish_molecule(
             ligands.insert(usize::from(has_previous), Ligand::LonePair);
         }
         let configuration = match (chirality, ligands.len()) {
+            (Chirality::SP(n), 4) => Configuration::SquarePlanar(n),
             (Chirality::Default(n) | Chirality::TH(n), 4) => Configuration::Tetrahedral(n),
             (Chirality::Default(n) | Chirality::TB(n), 5) => Configuration::TrigonalBipyramidal(n),
             (Chirality::Default(n) | Chirality::OH(n), 6) => Configuration::Octahedral(n),
