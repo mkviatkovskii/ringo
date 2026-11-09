@@ -12,9 +12,15 @@ pub struct Molecule {
     pub(crate) graph: StableGraph<Atom, Bond, Undirected>,
     pub(crate) stereo: Vec<crate::model::stereo::AtomStereo>,
     pub(crate) bond_stereo: Vec<crate::model::stereo::DoubleBondStereo>,
+    pub(crate) allene_stereo: Vec<crate::model::stereo::AlleneStereo>,
 }
 
 impl Molecule {
+    /// Explicit allene/cumulene configurations, with their axes and terminal ligands.
+    pub fn allene_stereo(&self) -> &[crate::model::stereo::AlleneStereo] {
+        &self.allene_stereo
+    }
+
     pub fn double_bond_stereo(&self) -> &[crate::model::stereo::DoubleBondStereo] {
         &self.bond_stereo
     }

@@ -13,7 +13,11 @@ fn corpus_fixtures_preserve_every_marker() {
             .enumerate()
             .filter(|&(i, b)| b == b'@' && (i == 0 || smiles.as_bytes()[i - 1] != b'@'))
             .count();
-        assert_eq!(molecule.atom_stereo().len(), markers, "{line}");
+        assert_eq!(
+            molecule.atom_stereo().len() + molecule.allene_stereo().len(),
+            markers,
+            "{line}"
+        );
     }
 }
 
@@ -191,7 +195,6 @@ fn directional_meaning_and_errors() {
         "[C@TH3](F)(Cl)(Br)I",
         "[Co@OH31](F)(Cl)(Br)(I)(N)O",
         "F[C@](Cl)Br",
-        "NC(Br)=[C@]=C(O)C",
     ] {
         assert!(parse_molecule(smiles).is_err(), "{smiles}");
     }

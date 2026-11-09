@@ -190,6 +190,7 @@ fn parse_molecule_next(input: &mut &str) -> ModalResult<Molecule> {
     let mut molecule = Molecule::new();
     let mut ligand_order: Vec<Vec<Option<NodeIndex>>> = Vec::new();
     let mut chiral_atoms = Vec::new();
+    let mut has_previous = Vec::new();
     let mut rings = RingClosures::default();
     let mut stack: Vec<NodeIndex> = Vec::new();
     let mut pending_bonds: Vec<PendingBond> = Vec::new();
@@ -249,8 +250,9 @@ fn parse_molecule_next(input: &mut &str) -> ModalResult<Molecule> {
                 let aromatic = atom.aromatic;
                 let node = molecule.add_atom(atom);
                 ligand_order.push(Vec::new());
+                has_previous.push(prev_node != NodeIndex::end());
                 if let Some(chirality) = chirality {
-                    chiral_atoms.push((node, chirality, prev_node != NodeIndex::end()));
+                    chiral_atoms.push((node, chirality));
                 }
                 if !bracket {
                     organic_nodes.push((node, atomic_number, aromatic));
@@ -290,6 +292,7 @@ fn parse_molecule_next(input: &mut &str) -> ModalResult<Molecule> {
         organic_nodes,
         chiral_atoms,
         &ligand_order,
+        &has_previous,
         &directions,
     )
 }
@@ -315,8 +318,9 @@ fn finish_molecule(
     mut molecule: Molecule,
     pending_bonds: Vec<PendingBond>,
     organic_nodes: Vec<(NodeIndex, u8, bool)>,
-    chiral_atoms: Vec<(NodeIndex, Chirality, bool)>,
+    chiral_atoms: Vec<(NodeIndex, Chirality)>,
     ligand_order: &[Vec<Option<NodeIndex>>],
+    has_previous: &[bool],
     directions: &[(NodeIndex, NodeIndex, bool)],
 ) -> ModalResult<Molecule> {
     add_bonds(&mut molecule, pending_bonds);
@@ -330,7 +334,32 @@ fn finish_molecule(
     // after the hydrogens: perception moves electrons around, not hydrogens
     molecule.perceive_aromaticity();
 
-    for (node, chirality, has_previous) in chiral_atoms {
+    for (node, chirality) in chiral_atoms {
+        let allene = match chirality {
+            Chirality::AL(n) => Some(n),
+            Chirality::Default(n)
+                if ligand_order[node.index()].len() == 2
+                    && molecule
+                        .graph
+                        .edges(node)
+                        .all(|edge| edge.weight().order == BondOrder::Double) =>
+            {
+                Some(n)
+            }
+            _ => None,
+        };
+        if let Some(permutation) = allene {
+            let stereo = super::allene::resolve_allene(
+                &molecule,
+                node,
+                permutation,
+                ligand_order,
+                has_previous,
+            )?;
+            molecule.allene_stereo.push(stereo);
+            continue;
+        }
+        let has_previous = has_previous[node.index()];
         let atom = &molecule.graph[node];
         if atom.hs > 6
             || (atom.hs > 1 && matches!(chirality, Chirality::Default(_) | Chirality::TH(_)))
@@ -792,14 +821,7 @@ mod tests {
     #[test]
     fn parse_molecule_rejects_unparsed_rest() {
         // still unsupported, so an error instead of a partial molecule
-        for smiles in [
-            "C%1CC%1",
-            "CC$C",
-            "NC(Br)=[C@AL1]=C(O)C",
-            "Cq",
-            "C[Xx]",
-            "C[c",
-        ] {
+        for smiles in ["C%1CC%1", "CC$C", "C~C", "Cq", "C[Xx]", "C[c"] {
             assert!(parse_molecule(smiles).is_err(), "{smiles}");
         }
         // a title after whitespace is fine, and comes back as the rest

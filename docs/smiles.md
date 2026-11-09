@@ -41,12 +41,13 @@ separate codes for donor and acceptor ends. Equivalent reversed spellings, such 
 | Configuration | Supported notation |
 |---|---|
 | Tetrahedral | `@`, `@@`, `@TH1`, `@TH2` |
+| Allene/cumulene | `@AL1`, `@AL2`, `@`, `@@` on the middle atom of an allene-like axis |
 | Square planar | `@SP1`–`@SP3`; degree-four shorthand remains tetrahedral |
 | Trigonal bipyramidal | `@TB1`–`@TB20`, supported coordination-based shorthand |
 | Octahedral | `@OH1`–`@OH30`, supported coordination-based shorthand |
 | Ordinary double bond | `/`, `\` |
 
-`Molecule::atom_stereo()` and `Molecule::double_bond_stereo()` expose the
+`Molecule::atom_stereo()`, `Molecule::allene_stereo()` and `Molecule::double_bond_stereo()` expose the
 preserved configurations. Atom configurations refer to recorded SMILES ligand order,
 not CIP R/S labels. SP/TB/OH permutation numbers retain their SMILES meaning; missing
 coordination sites occupy the implicit-hydrogen position, following the RDKit SMILES
@@ -64,6 +65,27 @@ missing sites are `Ligand::Vacancy`, not lone pairs. More than four SP sites is 
 error. See the [RDKit conventions](https://www.rdkit.org/docs/RDKit_Book.html#support-for-non-tetrahedral-atomic-stereochemistry)
 for hydrogen and missing-site examples.
 
+Allene-like axes contain an even number of consecutive double bonds (three, five,
+seven, ... atoms), with the tag on the middle atom. `AlleneStereo` stores that
+center, the complete ordered terminal-to-terminal axis, and four terminal ligand
+references: two at the first end followed by two at the other end. The first axis
+arm is the center's first neighbour in SMILES encounter order. Each pair follows
+SMILES encounter order, including ring-closure slots; suppressed terminal hydrogens
+immediately follow their terminal atom. Explicit isotopic hydrogens remain atom
+references. AL1/AL2 and their `@`/`@@` aliases use the
+[OpenSMILES collapsed-tetrahedron convention](https://opensmiles.org/opensmiles.html#_tetrahedral_allene_like_systems).
+For example, `NC(Br)=[C@]=C(O)C` records terminal references N, Br, O, C.
+The [Daylight hydrogen example](https://daylight.com/dayhtml/doc/theory/theory.smiles.html)
+`OC=[C@]=CF` is equivalent to `OC([H])=[C@AL1]=C([H])F`.
+
+Every internal axis atom must have exactly two double-bond neighbours and no H;
+each terminal must supply exactly two single-bonded or hydrogen ligand sites.
+An off-center tag, cyclic axis, odd number of double bonds, extra axis branches,
+missing terminal sites or other terminal bond types is an error. Ligands may
+themselves connect through rings. Ordinary double-bond directional records are
+separate; `/` and `\` do not encode an allene axis here. These checks preserve the
+representation, without requiring chemically distinct terminal substituents.
+
 Absence of a stereo record means unspecified stereochemistry. Invalid, incomplete,
 unsupported or contradictory specifications produce parsing errors. Directional
 specifications that aromaticity normalization cannot preserve are also rejected.
@@ -75,7 +97,6 @@ the molecule model does not yet make opposite configurations score differently.
 
 ## Known gaps
 
-- Allene/cumulene stereo.
 - Enhanced stereo and CXSMILES interpretation. Whitespace-separated extension
   blocks are currently treated as trailing record text, not chemical metadata.
 - Tilde (`~`) bonds and extended ring labels such as `%(100)`.

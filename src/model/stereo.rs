@@ -29,6 +29,18 @@ pub struct AtomStereo {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AlleneStereo {
+    pub center: NodeIndex,
+    /// Terminal-to-terminal double-bond chain, ordered by the center's SMILES neighbours.
+    /// The center is its middle atom.
+    pub axis: Vec<NodeIndex>,
+    /// Two SMILES-ordered substituents at axis[0], then two at its last atom.
+    pub ligands: [Ligand; 4],
+    /// AL1/AL2 (or @/@@), interpreted by collapsing the axis to a tetrahedron.
+    pub permutation: u8,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DoubleBondStereo {
     pub bond: EdgeIndex,
     pub ends: [NodeIndex; 2],
