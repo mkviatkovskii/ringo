@@ -58,28 +58,30 @@ impl Molecule {
         self.input_valences = self
             .graph
             .node_indices()
-            .map(|node| {
-                let atom = &self.graph[node];
-                let valence =
-                    self.bond_valence(node) + u32::from(atom.hs) + u32::from(atom.implicit_hs);
-                let aromatic = self
-                    .graph
-                    .edges(node)
-                    .any(|e| e.weight().order == BondOrder::Aromatic);
-                let has_pi_bond = self
-                    .graph
-                    .edges(node)
-                    .any(|e| matches!(e.weight().order, BondOrder::Double | BondOrder::Triple));
-                // Lone-pair donors and empty p orbitals do not need an extra ring bond order.
-                let donor_or_empty = match (atom.element.atomic_number, atom.charge) {
-                    (5 | 8 | 16 | 34, 0) | (6, -1 | 1) | (7, -1) => true,
-                    (7 | 15 | 33, 0) => valence == 3,
-                    _ => false,
-                };
-                let pi = u32::from(aromatic && !has_pi_bond && !donor_or_empty);
-                valence + pi
-            })
+            .map(|node| self.written_valence(node))
             .collect();
+    }
+
+    /// The valence of an atom as its bonds are written now. An aromatic bond counts one, and
+    /// an aromatic atom that needs a ring π bond counts one more.
+    pub(crate) fn written_valence(&self, node: NodeIndex) -> u32 {
+        let atom = &self.graph[node];
+        let valence = self.bond_valence(node) + u32::from(atom.hs) + u32::from(atom.implicit_hs);
+        let aromatic = self
+            .graph
+            .edges(node)
+            .any(|e| e.weight().order == BondOrder::Aromatic);
+        let has_pi_bond = self
+            .graph
+            .edges(node)
+            .any(|e| matches!(e.weight().order, BondOrder::Double | BondOrder::Triple));
+        // Lone-pair donors and empty p orbitals do not need an extra ring bond order.
+        let donor_or_empty = match (atom.element.atomic_number, atom.charge) {
+            (5 | 8 | 16 | 34 | 52, 0) | (6, -1 | 1) | (7, -1) => true,
+            (7 | 15 | 33, 0) => valence == 3,
+            _ => false,
+        };
+        valence + u32::from(aromatic && !has_pi_bond && !donor_or_empty)
     }
 }
 

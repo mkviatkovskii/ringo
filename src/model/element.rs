@@ -133,6 +133,11 @@ impl Element {
         }
     }
 
+    /// The symbol, such as "C" or "Cl"; "*" for the wildcard.
+    pub fn symbol(&self) -> &'static str {
+        SYMBOLS[usize::from(self.atomic_number)]
+    }
+
     /// The element for a symbol such as "C" or "Cl"; "*" is the wildcard, atomic number 0.
     pub fn from_symbol(symbol: &str) -> Option<Element> {
         let index = SYMBOLS.iter().position(|&s| s == symbol)?;

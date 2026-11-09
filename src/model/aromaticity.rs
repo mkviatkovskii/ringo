@@ -8,8 +8,8 @@ use std::collections::HashSet;
 
 impl Molecule {
     /// Marks every ring that obeys Hückel's rule (4n+2 π electrons) as aromatic: its
-    /// atoms aromatic, its bonds `Aromatic`. A ring written in lowercase, or with `:`
-    /// bonds, that fails the rule is still taken as aromatic, as written. Any other
+    /// atoms aromatic, its bonds `Aromatic`. A ring written entirely with aromatic
+    /// bonds that fails the rule is still taken as aromatic, as written. Any other
     /// `Aromatic` bond becomes single. Afterwards a molecule has the same atoms and bonds
     /// whether it was written in Kekulé form ("C1=CC=CC=C1") or aromatic form ("c1ccccc1").
     pub fn perceive_aromaticity(&mut self) {
@@ -24,27 +24,34 @@ impl Molecule {
         let mut aromatic = alone.clone();
         // fused pairs such as azulene (5 + 7 atoms) are aromatic only around the
         // outside; the bond they share stays single
-        let mut shared_bonds: HashSet<EdgeIndex> = HashSet::new();
+        let mut pairs = Vec::new();
         for i in 0..rings.len() {
             for j in i + 1..rings.len() {
-                if aromatic[i] || aromatic[j] {
-                    continue;
-                }
                 let shared: Vec<NodeIndex> = rings[i]
                     .iter()
                     .filter(|node| rings[j].contains(node))
                     .copied()
                     .collect();
-                let [a, b] = shared[..] else {
-                    continue;
-                };
-                let union: HashSet<NodeIndex> = rings[i].iter().chain(&rings[j]).copied().collect();
-                if self.huckel(union.into_iter(), &ring_bonds) {
-                    aromatic[i] = true;
-                    aromatic[j] = true;
-                    shared_bonds
-                        .extend(self.graph.find_edge_undirected(a, b).map(|(edge, _)| edge));
+                if let [a, b] = shared[..] {
+                    if let Some((edge, _)) = self.graph.find_edge_undirected(a, b) {
+                        pairs.push((i, j, edge));
+                    }
                 }
+            }
+        }
+        // when one ring could pair with either of two others, as in phenalene, a shared bond
+        // written `-` picks the pair, so a written molecule reads back the same in any order
+        pairs.sort_by_key(|&(_, _, edge)| self.graph[edge].order == BondOrder::Aromatic);
+        let mut shared_bonds: HashSet<EdgeIndex> = HashSet::new();
+        for (i, j, edge) in pairs {
+            if aromatic[i] || aromatic[j] {
+                continue;
+            }
+            let union: HashSet<NodeIndex> = rings[i].iter().chain(&rings[j]).copied().collect();
+            if self.huckel(union.into_iter(), &ring_bonds) {
+                aromatic[i] = true;
+                aromatic[j] = true;
+                shared_bonds.insert(edge);
             }
         }
         for (i, ring) in rings.iter().enumerate() {
@@ -78,11 +85,12 @@ impl Molecule {
         }
     }
 
+    /// Whether every bond of the ring was written aromatic: with no symbol between lowercase
+    /// atoms, or with `:`. A `-` or `=` stands as written, so the 4-ring of biphenylene,
+    /// `c1ccc2c(c1)-c1ccccc1-2`, isn't aromatic although its atoms are.
     fn written_aromatic(&self, ring: &[NodeIndex]) -> bool {
-        ring.iter().all(|&node| self.graph[node].aromatic)
-            || self
-                .ring_edges(ring)
-                .all(|edge| self.graph[edge].order == BondOrder::Aromatic)
+        self.ring_edges(ring)
+            .all(|edge| self.graph[edge].order == BondOrder::Aromatic)
     }
 
     /// Whether these atoms hold 4n+2 π electrons, each of them giving some.
@@ -177,8 +185,9 @@ impl Molecule {
         ring_bonds
     }
 
-    /// The shortest ring through each bond, in ring order, without duplicates. For the
-    /// small fused rings of drug-like molecules this is the usual smallest set of rings.
+    /// One shortest ring from each end of each bond, without duplicates. Trying both
+    /// ends retains local ties without enumerating combinations around macrocycles.
+    // shortcut: representative rings can miss extensive ties; revisit for full corpus order independence.
     fn rings(&self, ring_bonds: &FixedBitSet) -> Vec<Vec<NodeIndex>> {
         let mut seen: HashSet<Vec<NodeIndex>> = HashSet::new();
         let mut rings = Vec::new();
@@ -188,20 +197,25 @@ impl Molecule {
             .edge_references()
             .filter(|edge| ring_bonds.contains(edge.id().index()))
         {
-            let Some(ring) = self.shortest_path_without(
-                edge.source(),
-                edge.target(),
-                edge.id(),
-                ring_bonds,
-                &mut parent,
-                &mut queue,
-            ) else {
-                continue;
-            };
-            let mut key = ring.clone();
-            key.sort_unstable();
-            if seen.insert(key) {
-                rings.push(ring);
+            for (from, to) in [
+                (edge.source(), edge.target()),
+                (edge.target(), edge.source()),
+            ] {
+                let Some(ring) = self.shortest_path_without(
+                    from,
+                    to,
+                    edge.id(),
+                    ring_bonds,
+                    &mut parent,
+                    &mut queue,
+                ) else {
+                    continue;
+                };
+                let mut key = ring.clone();
+                key.sort_unstable();
+                if seen.insert(key) {
+                    rings.push(ring);
+                }
             }
         }
         rings
@@ -265,10 +279,71 @@ mod tests {
     use crate::math::similarity::tanimoto::tanimoto_bitset;
     use crate::model::bond::BondOrder;
     use petgraph::stable_graph::NodeIndex;
+    use std::fmt::Write;
 
     fn aromatic_atoms(smiles: &str) -> Vec<bool> {
         let m = parse_molecule(smiles).unwrap().1;
         m.graph.node_weights().map(|atom| atom.aromatic).collect()
+    }
+
+    #[test]
+    fn cycloparaphenylenes_do_not_enumerate_path_combinations() {
+        let label = |n: usize| {
+            if n < 10 {
+                n.to_string()
+            } else {
+                format!("%{n}")
+            }
+        };
+        for count in [10, 12, 14] {
+            let mut smiles = "c12ccc(".to_owned();
+            for i in 1..count - 1 {
+                write!(smiles, "-c{}ccc(", label(i + 2)).unwrap();
+            }
+            write!(smiles, "-c{}ccc-2cc{}", label(count + 1), label(count + 1)).unwrap();
+            for i in (1..count - 1).rev() {
+                write!(smiles, ")cc{}", label(i + 2)).unwrap();
+            }
+            smiles.push_str(")cc1");
+            let start = std::time::Instant::now();
+            let molecule = parse_molecule(&smiles).unwrap().1;
+            eprintln!("[{count}]CPP: {:?}", start.elapsed());
+            assert_eq!(molecule.graph.node_count(), count * 6);
+            assert_eq!(
+                molecule
+                    .graph
+                    .edge_weights()
+                    .filter(|b| b.order == BondOrder::Aromatic)
+                    .count(),
+                count * 6
+            );
+            assert!(
+                molecule.rings(&molecule.covalent_ring_bonds()).len()
+                    <= 2 * molecule.graph.edge_count()
+            );
+        }
+    }
+
+    #[test]
+    fn explicitly_single_biphenylene_links_stay_single() {
+        let molecule = parse_molecule("c1ccc2c(c1)-c1ccccc1-2").unwrap().1;
+        assert!(molecule.graph.node_weights().all(|a| a.aromatic));
+        assert_eq!(
+            molecule
+                .graph
+                .edge_weights()
+                .filter(|b| b.order == BondOrder::Single)
+                .count(),
+            2
+        );
+        assert_eq!(
+            molecule
+                .graph
+                .edge_weights()
+                .filter(|b| b.order == BondOrder::Aromatic)
+                .count(),
+            12
+        );
     }
 
     #[test]

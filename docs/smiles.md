@@ -14,8 +14,20 @@ as atomic number zero; it does not turn a similarity query into a SMARTS pattern
 Ring labels are one digit or `%` followed by two digits.
 
 Supported Kekulé and aromatic spellings are normalized by aromaticity perception.
-Hydrogens are counted before normalization. The molecule graph is exposed read-only
+A ring that fails Hückel's rule stays aromatic only if all its bonds were written
+aromatic: lowercase atoms with no bond symbol, or `:`. An explicit `-` or `=` stands,
+so the 4-ring of biphenylene, `c1ccc2c(c1)-c1ccccc1-2`, is not aromatic although
+its atoms are. Hydrogens are counted before normalization. The molecule graph is exposed read-only
 so external edits cannot leave computed hydrogen or stereo metadata stale.
+
+Reader compatibility change in #69: lowercase atoms alone no longer force every
+connecting ring bond aromatic. Explicit single bonds in biphenylene remain single;
+a regression test checks the two single links and twelve aromatic ring bonds.
+Ring perception considers a shortest ring from both ends of each cyclic bond,
+reuses BFS buffers, and excludes acyclic and dative bonds during traversal. This
+keeps the candidate count bounded by twice the bond count rather than enumerating
+all shortest paths. Selection among more extensive shortest-ring ties remains a
+heuristic; full corpus aromaticity/order-independence checks are still pending.
 
 ## Atom maps and classes
 
@@ -161,6 +173,53 @@ stability, ligand distinctness, stereogenicity and general chemical feasibility
 are not validated. Neutral hypervalent nitrogen is rejected rather than rewritten
 into a charged representation.
 
+## Writing SMILES
+
+`writer::write_smiles(&molecule)` writes a molecule in reading order;
+`writer::write_smiles_ranked(&molecule, &ranks)` starts each component at its
+lowest-ranked atom and visits neighbours in rank order, branches first. Reading the
+output back gives the same molecule: elements, isotopes, charges, hydrogen counts,
+atom classes, aromaticity, bond orders, dative bonds and stereo.
+
+- Atoms go in brackets only when the organic subset can't express them, and aromatic
+  atoms are lowercase. An aromatic atom with no lowercase symbol, such as silicon,
+  is written `[Si]` with `:` bonds.
+- A single bond between two aromatic atoms is written `-`; ring-bond symbols go on
+  the opening digit. Ring digits are reused once closed, but not on the atom that
+  closes them, and go on to `%10`–`%99`.
+- `@`/`@@` are recomputed for the ligand order of the output, for tetrahedral centres
+  and allenes. `/` and `\` are chosen again, then checked against what the reader
+  makes of them.
+- A configuration the output can't express is an error, never a different molecule:
+  square-planar, trigonal-bipyramidal and octahedral centres whose ligands come out in
+  a different order (their permutation numbers aren't renumbered yet), double-bond
+  configurations that `/` and `\` can't mark in that order, and more than 99 open
+  rings.
+
+The graph-ranking stage of [#63](https://github.com/mkviatkovskii/ringo/issues/63)
+is available through `canonical::canonical_smiles(&molecule)`. It sorts atom
+invariants, refines neighbour partitions and searches unresolved ties, retaining
+the smallest written result. Matching leaf outputs reveal automorphisms; their
+generators prune equivalent branches only when they preserve the current partition.
+No platform-dependent hashes are used. Canonicalization consistently rejects all
+SP/TB/OH centres before searching; the plain writer can still preserve their
+original ligand order. A failed writer ordering is skipped while searching other
+orderings; exhausting the search budget still returns an error.
+
+`ringo-canonical <smiles_file>` writes one output line per input line; use `-`
+for stdin. Record names are retained after a tab. Blank records produce blank lines.
+A failed record produces an empty SMILES field (with its name retained), reports
+its line number on stderr, and processing continues. The final exit status is
+unsuccessful if any record failed. `--search-limit` sets the maximum
+search nodes per molecule (default 100,000). Exhaustion returns `SearchLimit`,
+never a provisional result. The library also exposes `canonical_smiles_with_limit`.
+
+This is not yet the complete molecular identity implementation from #63. Stereo
+annotations are preserved and participate in leaf comparison, but stereo-aware
+partition refinement and removal of impossible or interacting stereo marks remain
+unimplemented. Large ChEMBL order-independence, idempotence, RDKit comparison,
+exact-matcher oracle and throughput acceptance runs remain outstanding.
+
 ## Known gaps
 
 - Enhanced stereo and CXSMILES interpretation. Whitespace-separated extension
@@ -168,7 +227,7 @@ into a charged representation.
 - Tilde (`~`) bonds and extended ring labels such as `%(100)`.
 - Some directional/aromatic ring cases; the current parser rejects these rather
   than discarding their stereo annotations.
-- CIP assignment and canonical SMILES writing.
+- CIP assignment and complete stereo normalization in canonical SMILES.
 
 [Issue #8](https://github.com/mkviatkovskii/ringo/issues/8) records corpus coverage
 and remaining cases. Further core syntax/stereo work is tracked in
