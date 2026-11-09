@@ -6,4 +6,3 @@ mod element;
 mod hydrogens;
 mod isotope;
 pub mod molecule;
-mod valence;

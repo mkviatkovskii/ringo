@@ -1,8 +1,8 @@
-use ringo::db::search::{similarity_search_with_validation, SearchMode};
+use ringo::db::search::{similarity_search, SearchMode};
 use std::process::ExitCode;
 
 const USAGE: &str = "usage: ringo-search <smiles_file> <query> <min_similarity> <limit> \
-                     [max_similarity=1.0] [best|first] [--validate]";
+                     [max_similarity=1.0] [best|first]";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -10,14 +10,13 @@ fn main() -> ExitCode {
         eprintln!("{USAGE}");
         return ExitCode::from(2);
     };
-    let results = match similarity_search_with_validation(
+    let results = match similarity_search(
         args.smiles_file,
         args.query,
         args.min_similarity,
         args.max_similarity,
         args.limit,
         args.mode,
-        args.validate,
     ) {
         Ok(results) => results,
         Err(e) => {
@@ -39,12 +38,9 @@ struct Args<'a> {
     limit: usize,
     max_similarity: f32,
     mode: SearchMode,
-    validate: bool,
 }
 
 fn parse_args(args: &[String]) -> Option<Args<'_>> {
-    let validate = args.last().is_some_and(|s| s == "--validate");
-    let args = &args[..args.len() - usize::from(validate)];
     if !(4..=6).contains(&args.len()) {
         return None;
     }
@@ -59,7 +55,6 @@ fn parse_args(args: &[String]) -> Option<Args<'_>> {
             Some("first") => SearchMode::First,
             Some(_) => return None,
         },
-        validate,
     })
 }
 
@@ -83,7 +78,6 @@ mod tests {
                 limit: 10,
                 max_similarity: 1.0,
                 mode: SearchMode::Best,
-                validate: false,
             })
         );
         let full = args(&["m.smi", "CCO", "0.5", "10", "0.9", "first"]);
@@ -91,17 +85,6 @@ mod tests {
         assert_eq!(
             (parsed.max_similarity, parsed.mode),
             (0.9, SearchMode::First)
-        );
-        assert!(
-            parse_args(&args(&["m.smi", "CCO", "0.5", "10", "--validate"]))
-                .unwrap()
-                .validate
-        );
-        let validated = args(&["m.smi", "CCO", "0.5", "10", "0.9", "first", "--validate"]);
-        let parsed = parse_args(&validated).unwrap();
-        assert_eq!(
-            (parsed.max_similarity, parsed.mode, parsed.validate),
-            (0.9, SearchMode::First, true)
         );
 
         // the panics from issue #20: too few arguments, a bad number, a bad mode

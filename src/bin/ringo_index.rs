@@ -1,13 +1,12 @@
-use ringo::db::index::{index_file_with_validation, DEFAULT_BATCH_LINES};
+use ringo::db::index::{index_file, DEFAULT_BATCH_LINES};
 use ringo::db::index_header::IndexHeader;
 use std::process::ExitCode;
 
-const USAGE: &str =
-    "usage: ringo-index <smiles_file> [radius=2] [bits=512] [batch_lines=65536] [--validate]";
+const USAGE: &str = "usage: ringo-index <smiles_file> [radius=2] [bits=512] [batch_lines=65536]";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let Some((smiles_file, radius, bits, batch_lines, validate)) = parse_args(&args) else {
+    let Some((smiles_file, radius, bits, batch_lines)) = parse_args(&args) else {
         eprintln!("{USAGE}");
         return ExitCode::from(2);
     };
@@ -16,12 +15,10 @@ fn main() -> ExitCode {
         eprintln!("{e}\n{USAGE}");
         return ExitCode::from(2);
     }
-    match index_file_with_validation(smiles_file, radius, bits, batch_lines, validate) {
+    match index_file(smiles_file, radius, bits, batch_lines) {
         Ok(skipped) => {
             if skipped > 0 {
-                eprintln!(
-                    "skipped {skipped} line(s) that could not be parsed or failed validation"
-                );
+                eprintln!("skipped {skipped} line(s) that could not be parsed");
             }
             ExitCode::SUCCESS
         }
@@ -32,9 +29,7 @@ fn main() -> ExitCode {
     }
 }
 
-fn parse_args(args: &[String]) -> Option<(&str, usize, usize, usize, bool)> {
-    let validate = args.last().is_some_and(|s| s == "--validate");
-    let args = &args[..args.len() - usize::from(validate)];
+fn parse_args(args: &[String]) -> Option<(&str, usize, usize, usize)> {
     if args.is_empty() || args.len() > 4 {
         return None;
     }
@@ -44,7 +39,7 @@ fn parse_args(args: &[String]) -> Option<(&str, usize, usize, usize, bool)> {
         .get(3)
         .map_or(Some(DEFAULT_BATCH_LINES), |s| s.parse().ok())
         .filter(|&n| n > 0)?;
-    Some((&args[0], radius, bits, batch_lines, validate))
+    Some((&args[0], radius, bits, batch_lines))
 }
 
 #[cfg(test)]
@@ -59,25 +54,16 @@ mod tests {
     fn test_parse_args() {
         assert_eq!(
             parse_args(&args(&["m.smi"])),
-            Some(("m.smi", 2, 512, 65_536, false))
+            Some(("m.smi", 2, 512, 65_536))
         );
         assert_eq!(
             parse_args(&args(&["m.smi", "3", "1024"])),
-            Some(("m.smi", 3, 1024, 65_536, false))
+            Some(("m.smi", 3, 1024, 65_536))
         );
         assert_eq!(
             parse_args(&args(&["m.smi", "3", "1024", "1000"])),
-            Some(("m.smi", 3, 1024, 1000, false))
+            Some(("m.smi", 3, 1024, 1000))
         );
-        assert_eq!(
-            parse_args(&args(&["m.smi", "--validate"])),
-            Some(("m.smi", 2, 512, 65_536, true))
-        );
-        assert_eq!(
-            parse_args(&args(&["m.smi", "3", "1024", "1000", "--validate"])),
-            Some(("m.smi", 3, 1024, 1000, true))
-        );
-        assert_eq!(parse_args(&args(&["--validate"])), None);
         assert_eq!(parse_args(&args(&[])), None);
         assert_eq!(parse_args(&args(&["m.smi", "two"])), None);
         assert_eq!(parse_args(&args(&["m.smi", "2", "512", "0"])), None);

@@ -95,16 +95,27 @@ is described below; arithmetic and representation limits are checked independent
 ECFP and similarity search are stereo-insensitive. Preserving a configuration in
 the molecule model does not yet make opposite configurations score differently.
 
-## Optional valence validation
+## Optional molecule validation
 
-Existing library functions and CLI commands remain permissive by default.
-`parse_molecule_with_validation(input, true)` enables valence checks; passing `false`
-is equivalent to `parse_molecule(input)`. For example, `C(C)(C)(C)(C)C` parses in
-permissive mode and fails with validation. Neither mode changes the structure to
-repair its chemistry. Syntax, stereo representation and checked `u8` arithmetic
-are mandatory in both modes, including bond-order and hydrogen totals on bracket atoms.
+Chemical validation is a separate optional step on an already loaded molecule:
 
-The initial policy checks upper valence limits for H, B, C, N, O, F, Si, P, S,
+```rust
+use ringo::io::smiles::reader::molecule::parse_molecule;
+
+let (_, molecule) = parse_molecule("C(C)(C)(C)(C)C").unwrap();
+assert!(molecule.validate().is_err());
+```
+
+`Molecule::validate()` returns `Result<(), String>`. This first implementation checks
+valence; aromaticity consistency and chemical stereogenicity checks are not yet
+implemented. A successful result only means the implemented checks passed.
+Errors identify the
+zero-based atom index and its excessive valence or unsupported charge state.
+Validation never modifies the molecule, its stereo records or its fingerprints.
+Loading always checks syntax, stereo representation and `u8` arithmetic, including
+bond-order and hydrogen totals on bracket atoms, independently of this optional step.
+
+The first implemented check covers upper valence limits for H, B, C, N, O, F, Si, P, S,
 Cl, As, Se, Br and I. Neutral ceilings are 1 for H/F/Cl/Br, 2 for O, 3 for B/N,
 4 for C/Si, 5 for P/As/I and 6 for S/Se. Lower valences are accepted, including
 bracket atoms with incomplete valence; this is not radical perception.
@@ -118,8 +129,9 @@ charges fail validation. The policy follows the
 [RDKit valence ceilings and charge rules](https://www.rdkit.org/docs/RDKit_Book.html#valence-calculation-and-allowed-valences),
 without its structure cleanup or full sanitization pipeline.
 
-Bond orders and explicit/implicit hydrogens are counted before aromaticity
-normalization. Dative bonds contribute zero at the donor and one at the acceptor.
+Loading records valence counts before aromaticity normalization replaces written
+bond orders, so post-load validation can still detect an over-valent input atom.
+Dative bonds contribute zero at the donor and one at the acceptor.
 Aromatic bonds contribute one each, plus one per atom needing a ring pi bond;
 lone-pair donors, empty p orbitals and atoms with a written double/triple bond do
 not receive that extra contribution. This admits pyridine, pyrrole, pyrrolide,
@@ -132,16 +144,9 @@ stability, ligand distinctness, stereogenicity and general chemical feasibility
 are not validated. Neutral hypervalent nitrogen is rejected rather than rewritten
 into a charged representation. Passing validation means only passing these rules.
 
-`index_file_with_validation(..., true)` counts rejected records as skipped and
-stores empty fingerprints, just as for syntax errors.
-`similarity_search_with_validation(..., true)` rejects an invalid query with
-`InvalidInput`. Their existing counterparts select permissive parsing. Append
-`--validate` as the last argument to either CLI to select these checks.
-
-The search option checks only the query. Build the index with validation to
-exclude invalid dataset records. Validation does not change accepted fingerprints,
-and the index does not store the chosen policy; rebuild it when changing policies.
-Index format remains version 1.
+Parsing, indexing and similarity search do not invoke chemical validation and have
+no validation options. Call the validation method explicitly when needed after
+loading. Index format remains version 1.
 
 ## Known gaps
 

@@ -1,7 +1,7 @@
 use crate::db::index_header::{IndexHeader, INDEX_HEADER_SIZE};
 use crate::db::index_item::{index_item_size, split_record};
 use crate::db::with_path;
-use crate::io::smiles::reader::molecule::parse_molecule_with_validation;
+use crate::io::smiles::reader::molecule::parse_molecule;
 use memmap2::Mmap;
 use rayon::prelude::*;
 use std::fs::File;
@@ -32,33 +32,11 @@ pub fn similarity_search(
     limit: usize,
     mode: SearchMode,
 ) -> io::Result<Vec<SearchResult>> {
-    similarity_search_with_validation(
-        smiles_file,
-        query,
-        min_similarity,
-        max_similarity,
-        limit,
-        mode,
-        false,
-    )
-}
-
-/// As `similarity_search`, optionally validating the query's main-group valence.
-/// Indexed records follow the policy chosen when building the index; search does not revalidate them.
-pub fn similarity_search_with_validation(
-    smiles_file: &str,
-    query: &str,
-    min_similarity: f32,
-    max_similarity: f32,
-    limit: usize,
-    mode: SearchMode,
-    validate: bool,
-) -> io::Result<Vec<SearchResult>> {
-    let query = parse_molecule_with_validation(query, validate)
+    let query = parse_molecule(query)
         .map_err(|_| {
             io::Error::new(
                 io::ErrorKind::InvalidInput,
-                format!("could not parse query {query} (validation enabled: {validate})"),
+                format!("could not parse query {query}"),
             )
         })?
         .1;
