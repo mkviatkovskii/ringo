@@ -37,18 +37,24 @@ CCO ethanol
 CC(=O)O acetic_acid
 ```
 
-The indexer reports how many records could not be parsed. Those records are omitted
+The indexer reports how many records could not be parsed or failed enabled validation. Those records are omitted
 from search results. An unsupported or malformed query produces an error.
 
 ## Command-line options
 
 ```text
-ringo-index <smiles_file> [radius=2] [bits=512]
-ringo-search <smiles_file> <query> <min_similarity> <limit> [max_similarity=1.0] [best|first]
+ringo-index <smiles_file> [radius=2] [bits=512] [batch_lines=65536] [--validate]
+ringo-search <smiles_file> <query> <min_similarity> <limit> [max_similarity=1.0] [best|first] [--validate]
 ```
 
 The index stores its fingerprint radius and bit count; queries use those same
 parameters. Radius 2 corresponds to ECFP4.
+
+Parsing is permissive by default. Append `--validate` to check supported main-group
+valence limits: indexing skips rejected records, and search rejects an invalid query.
+To search a validated dataset, rebuild its index with `--validate` as well; the
+search flag checks the query, not previously indexed records. See the
+[validation policy and limits](docs/smiles.md#optional-valence-validation).
 
 Search includes scores between the minimum and maximum, inclusive. The default
 `best` mode returns the most similar records first, up to the limit; equal scores
@@ -68,7 +74,8 @@ unsupported cases.
 
 Fingerprints and similarity search are currently **stereo-insensitive**: opposite
 configurations can have identical fingerprints. The reader preserves supported
-stereochemistry but does not validate chemical plausibility or assign CIP labels.
+stereochemistry and optionally checks valence limits; it does not establish chemical
+plausibility or assign CIP labels.
 Ringo does not yet read every SMILES extension.
 
 ## Development

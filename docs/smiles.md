@@ -89,11 +89,58 @@ representation, without requiring chemically distinct terminal substituents.
 Absence of a stereo record means unspecified stereochemistry. Invalid, incomplete,
 unsupported or contradictory specifications produce parsing errors. Directional
 specifications that aromaticity normalization cannot preserve are also rejected.
-The reader does not perceive additional stereocentres or validate chemical
-plausibility. Arithmetic and representation limits are checked independently.
+The reader does not perceive additional stereocentres. Optional valence validation
+is described below; arithmetic and representation limits are checked independently.
 
 ECFP and similarity search are stereo-insensitive. Preserving a configuration in
 the molecule model does not yet make opposite configurations score differently.
+
+## Optional valence validation
+
+Existing library functions and CLI commands remain permissive by default.
+`parse_molecule_with_validation(input, true)` enables valence checks; passing `false`
+is equivalent to `parse_molecule(input)`. For example, `C(C)(C)(C)(C)C` parses in
+permissive mode and fails with validation. Neither mode changes the structure to
+repair its chemistry. Syntax, stereo representation and checked `u8` arithmetic
+are mandatory in both modes, including bond-order and hydrogen totals on bracket atoms.
+
+The initial policy checks upper valence limits for H, B, C, N, O, F, Si, P, S,
+Cl, As, Se, Br and I. Neutral ceilings are 1 for H/F/Cl/Br, 2 for O, 3 for B/N,
+4 for C/Si, 5 for P/As/I and 6 for S/Se. Lower valences are accepted, including
+bracket atoms with incomplete valence; this is not radical perception.
+
+For these main-group atoms, charges from -2 through +2 use the ceiling of the
+isoelectronic element when the table supplies one. P/As with charge -2 and S/Se
+with charge -1 instead have a ceiling of 5. Unsupported charge/table combinations
+fail validation. Neutral H allows one bond; H+ and H- allow none. Other hydrogen
+charges fail validation. The policy follows the
+[RDKit valence ceilings and charge rules](https://www.rdkit.org/docs/RDKit_Book.html#valence-calculation-and-allowed-valences),
+without its structure cleanup or full sanitization pipeline.
+
+Bond orders and explicit/implicit hydrogens are counted before aromaticity
+normalization. Dative bonds contribute zero at the donor and one at the acceptor.
+Aromatic bonds contribute one each, plus one per atom needing a ring pi bond;
+lone-pair donors, empty p orbitals and atoms with a written double/triple bond do
+not receive that extra contribution. This admits pyridine, pyrrole, pyrrolide,
+fused aromatic carbon and supported exocyclic carbonyls without counting every
+aromatic bond as a double bond.
+
+Elements outside this list, including transition metals and wildcard atoms, have
+no chemical valence limit in this policy. Aromatic kekulizability, isotope
+stability, ligand distinctness, stereogenicity and general chemical feasibility
+are not validated. Neutral hypervalent nitrogen is rejected rather than rewritten
+into a charged representation. Passing validation means only passing these rules.
+
+`index_file_with_validation(..., true)` counts rejected records as skipped and
+stores empty fingerprints, just as for syntax errors.
+`similarity_search_with_validation(..., true)` rejects an invalid query with
+`InvalidInput`. Their existing counterparts select permissive parsing. Append
+`--validate` as the last argument to either CLI to select these checks.
+
+The search option checks only the query. Build the index with validation to
+exclude invalid dataset records. Validation does not change accepted fingerprints,
+and the index does not store the chosen policy; rebuild it when changing policies.
+Index format remains version 1.
 
 ## Known gaps
 
@@ -106,6 +153,6 @@ the molecule model does not yet make opposite configurations score differently.
 
 [Issue #8](https://github.com/mkviatkovskii/ringo/issues/8) records corpus coverage
 and remaining cases. Further core syntax/stereo work is tracked in
-[#51](https://github.com/mkviatkovskii/ringo/issues/51), enhanced stereo/CXSMILES in
-[#52](https://github.com/mkviatkovskii/ringo/issues/52), and optional chemical
-validation in [#44](https://github.com/mkviatkovskii/ringo/issues/44).
+[#51](https://github.com/mkviatkovskii/ringo/issues/51) (completed), enhanced stereo/CXSMILES in
+[#52](https://github.com/mkviatkovskii/ringo/issues/52), and the initial optional
+valence policy in [#44](https://github.com/mkviatkovskii/ringo/issues/44).

@@ -53,23 +53,12 @@ fn implicit_hydrogens(
         1 | 9 | 17 | 35 | 53 => &[1],
         _ => &[],
     };
-    let mut bonds: u8 = 0;
-    let mut aromatic = aromatic;
-    for edge in molecule.graph.edges(node) {
-        let order = match edge.weight().order {
-            BondOrder::Dative => u8::from(edge.weight().donor != Some(node)),
-            BondOrder::Single => 1,
-            BondOrder::Double => 2,
-            BondOrder::Triple => 3,
-            BondOrder::Aromatic => {
-                aromatic = true;
-                1
-            }
-        };
-        bonds = bonds
-            .checked_add(order)
-            .ok_or_else(|| ErrMode::Cut(ContextError::new()))?;
-    }
+    let mut bonds = super::valence::bond_valence(molecule, node)?;
+    let aromatic = aromatic
+        || molecule
+            .graph
+            .edges(node)
+            .any(|edge| edge.weight().order == BondOrder::Aromatic);
     // an aromatic atom also spends one electron on the ring, and keeps its lowest
     // valence: the s in thiophene has no hydrogen
     if aromatic {
@@ -106,7 +95,17 @@ fn add_bonds(molecule: &mut Molecule, pending_bonds: Vec<PendingBond>) {
 /// a title) and the molecule. Anything else left over is SMILES the reader does not
 /// support, and an error, so it never yields a partial molecule.
 pub fn parse_molecule(input: &str) -> ModalResult<(&str, Molecule)> {
-    let (rest, molecule) = parse_molecule_next.parse_peek(input)?;
+    parse_molecule_with_validation(input, false)
+}
+
+/// Parses supported SMILES, optionally checking the documented main-group valence limits.
+/// Syntax, stereo representation and arithmetic checks apply in both modes.
+pub fn parse_molecule_with_validation(
+    input: &str,
+    validate: bool,
+) -> ModalResult<(&str, Molecule)> {
+    let (rest, molecule) =
+        (|input: &mut &str| parse_molecule_next(input, validate)).parse_peek(input)?;
     if !rest.is_empty() && !rest.starts_with(char::is_whitespace) {
         return Err(ErrMode::Cut(ContextError::new()));
     }
@@ -186,7 +185,7 @@ impl RingClosures {
     }
 }
 
-fn parse_molecule_next(input: &mut &str) -> ModalResult<Molecule> {
+fn parse_molecule_next(input: &mut &str, validate: bool) -> ModalResult<Molecule> {
     let mut molecule = Molecule::new();
     let mut ligand_order: Vec<Vec<Option<NodeIndex>>> = Vec::new();
     let mut chiral_atoms = Vec::new();
@@ -286,14 +285,15 @@ fn parse_molecule_next(input: &mut &str) -> ModalResult<Molecule> {
         return Err(ErrMode::Cut(ContextError::new()));
     }
 
+    add_bonds(&mut molecule, pending_bonds);
     finish_molecule(
         molecule,
-        pending_bonds,
         organic_nodes,
         chiral_atoms,
         &ligand_order,
         &has_previous,
         &directions,
+        validate,
     )
 }
 
@@ -316,21 +316,20 @@ fn parse_tokens(input: &mut &str) -> ModalResult<Vec<Token>> {
 
 fn finish_molecule(
     mut molecule: Molecule,
-    pending_bonds: Vec<PendingBond>,
     organic_nodes: Vec<(NodeIndex, u8, bool)>,
     chiral_atoms: Vec<(NodeIndex, Chirality)>,
     ligand_order: &[Vec<Option<NodeIndex>>],
     has_previous: &[bool],
     directions: &[(NodeIndex, NodeIndex, bool)],
+    validate: bool,
 ) -> ModalResult<Molecule> {
-    add_bonds(&mut molecule, pending_bonds);
-
     for (node, atomic_number, aromatic) in organic_nodes {
         let hs = implicit_hydrogens(&molecule, node, atomic_number, aromatic)?;
         if let Some(atom) = molecule.graph.node_weight_mut(node) {
             atom.implicit_hs = hs;
         }
     }
+    super::valence::check_valence(&molecule, validate)?;
     // after the hydrogens: perception moves electrons around, not hydrogens
     molecule.perceive_aromaticity();
 

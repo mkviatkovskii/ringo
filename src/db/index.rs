@@ -1,7 +1,7 @@
 use crate::db::index_header::IndexHeader;
 use crate::db::index_item::{index_item_size, split_record, IndexItem};
 use crate::db::with_path;
-use crate::io::smiles::reader::molecule::parse_molecule;
+use crate::io::smiles::reader::molecule::parse_molecule_with_validation;
 use crate::model::fingerprint::Fingerprint;
 use fixedbitset::FixedBitSet;
 use rayon::prelude::*;
@@ -21,6 +21,18 @@ pub fn index_file(
     radius: usize,
     bits: usize,
     batch_lines: usize,
+) -> io::Result<usize> {
+    index_file_with_validation(smiles_file, radius, bits, batch_lines, false)
+}
+
+/// As `index_file`, optionally rejecting records outside the documented valence policy.
+/// Rejected records are counted and stored as empty fingerprints, like syntax errors.
+pub fn index_file_with_validation(
+    smiles_file: &str,
+    radius: usize,
+    bits: usize,
+    batch_lines: usize,
+    validate: bool,
 ) -> io::Result<usize> {
     let header = IndexHeader::new(radius, bits)
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
@@ -77,9 +89,12 @@ pub fn index_file(
                 lines
                     .par_iter()
                     .map(|(_, line)| {
-                        parse_molecule(line.trim_end_matches(['\n', '\r']))
-                            .ok()
-                            .map(|(_, molecule)| molecule.ecfp(radius, bits))
+                        parse_molecule_with_validation(
+                            line.trim_end_matches(['\n', '\r']),
+                            validate,
+                        )
+                        .ok()
+                        .map(|(_, molecule)| molecule.ecfp(radius, bits))
                     })
                     .collect::<Vec<_>>()
             },

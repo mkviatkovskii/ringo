@@ -40,6 +40,16 @@ unchanged during each scan. A passing survey is not a claim of complete parser
 coverage or chemical validity. The checksum-pinned baseline and complete rejection
 classification are recorded in [issue #8](https://github.com/mkviatkovskii/ringo/issues/8).
 
+With the same environment variable, survey the optional valence policy separately:
+
+```sh
+cargo +stable test --release --locked --test validation corpus_valence_coverage -- --ignored --nocapture
+```
+
+This reports validated records, additional valence rejections, and records rejected
+in both modes, with examples. A valence rejection can reflect an unsupported
+representation, such as covalent metal coordination or neutral hypervalent nitrogen.
+
 ## Index compatibility during development
 
 Index format remains version 1 for the current development release; version changes
@@ -48,3 +58,5 @@ previously skipped records or fingerprint semantics change. Atom class/map label
 and the addition of dative-bond support leave existing covalent fingerprints unchanged.
 Square-planar and allene/cumulene tags also leave fingerprints unchanged; rebuild
 indexes to include previously rejected SP/AL-tagged records.
+Optional valence validation changes which records are indexed, not their fingerprints.
+Rebuild an index when changing that policy; it is not stored in the index header.
