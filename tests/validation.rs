@@ -203,6 +203,41 @@ fn aromatic_annotations_need_a_ring_and_a_kekule_structure() {
 }
 
 #[test]
+fn chalcogen_cations_give_a_lone_pair_only_with_three_neighbours() {
+    for smiles in [
+        // three neighbours: a lone pair, like the neutral atom in thiophene
+        "C[s+]1cccc1",
+        "C[S+]1C=CC=C1",
+        "C[se+]1cccc1",
+        "C[Se+]1C=CC=C1",
+        "C[te+]1cccc1",
+        "CN(C)Cc1ccc(CSCCNc2n[s+]([O-])nc2N)o1 CHEMBL8982",
+        // two neighbours: a ring double bond, like pyridine's N
+        "c1cc[s+]cc1",
+        "c1cc[se+]cc1",
+    ] {
+        let molecule = parse_molecule(smiles).unwrap().1;
+        molecule
+            .validate()
+            .unwrap_or_else(|error| panic!("{smiles}: {error}"));
+    }
+    for smiles in [
+        // a two-neighbour cation still needs a ring double bond, and has no partner here
+        "c1c[s+]cc1",
+        "c1c[se+]cc1",
+        // a three-neighbour cation gives its lone pair, leaving five carbons unpaired
+        "C[s+]1ccccc1",
+        "C[se+]1ccccc1",
+    ] {
+        let message = parse_molecule(smiles).unwrap().1.validate().unwrap_err();
+        assert!(
+            message.contains("no Kekulé structure"),
+            "{smiles}: {message}"
+        );
+    }
+}
+
+#[test]
 fn loading_always_checks_syntax_and_arithmetic() {
     let overflow = format!("C{}", "(C)".repeat(256));
     let bracket_overflow = format!("[C]{}", "(C)".repeat(256));

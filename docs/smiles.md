@@ -187,11 +187,12 @@ written, before normalization. An aromatic atom is one written in lowercase or w
 
 An aromatic atom needs a ring double bond unless it has a written double or triple
 bond (2-pyridone's C=O carbon), or gives a lone pair or an empty p orbital. Neutral
-O/S/Se/Te and N- give a lone pair. Neutral B/N/P/As and charged carbon with three
-neighbours or hydrogens give a lone pair or an empty p orbital: pyrrole's NH,
-indolizine's bridgehead N, borole's B, `[cH-]` and `[cH+]`. With two neighbours they
-need a double bond, like pyridine's N or borabenzene's B. Charged N/O/S, such as
-pyridinium and pyrylium, need one.
+O/S/Se/Te and N- give a lone pair. Neutral B/N/P/As, charged carbon and S+/Se+/Te+
+with three neighbours or hydrogens give a lone pair or an empty p orbital: pyrrole's
+NH, indolizine's bridgehead N, borole's B, `[cH-]`, `[cH+]`, and the S+ of
+`C[s+]1cccc1` or of CHEMBL8982's `n[s+]([O-])n`. With two neighbours they need a
+double bond, like pyridine's N, borabenzene's B or thiopyrylium's S+. Other charged
+N/O atoms, such as pyridinium and pyrylium, need one.
 
 An aromatic bond outside rings, such as the link in `c1ccccc1c1ccccc1`, is single,
 as loading reads it. It cannot supply a ring double bond, so `c1cccc1c1cccc1` fails.

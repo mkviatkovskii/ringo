@@ -207,10 +207,13 @@ impl Molecule {
         let donor_or_empty = match (atom.element.atomic_number, atom.charge) {
             // a lone pair with two neighbours: furan's O, pyrrolide's N-
             (8 | 16 | 34 | 52, 0) | (7, -1) => true,
-            // with three neighbours, a lone pair (pyrrole's NH, cyclopentadienide's CH-)
-            // or an empty p orbital (borole's B, tropylium's CH+); borabenzene's B
-            // with two needs a ring double bond, like pyridine's N
-            (5 | 7 | 15 | 33, 0) | (6, -1 | 1) => self.written_valence(node) == 3,
+            // with three neighbours, a lone pair (pyrrole's NH, cyclopentadienide's CH-,
+            // the S+ of a thiophenium or of CHEMBL8982's [s+]([O-])) or an empty p orbital
+            // (borole's B, tropylium's CH+); with two, borabenzene's B and thiopyrylium's
+            // S+ need a ring double bond, like pyridine's N
+            (5 | 7 | 15 | 33, 0) | (6, -1 | 1) | (16 | 34 | 52, 1) => {
+                self.written_valence(node) == 3
+            }
             _ => false,
         };
         !donor_or_empty
