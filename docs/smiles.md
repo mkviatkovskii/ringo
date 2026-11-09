@@ -131,6 +131,8 @@ policy; they are distinct from the normal valences used to infer hydrogens in th
 [OpenSMILES organic-subset rules](https://opensmiles.org/opensmiles.html#_organic_subset).
 For example, Ringo's optional validation rejects neutral nitrogen above valence
 three, although the notation's implicit-hydrogen rules include valence five.
+Halide anions F-/Cl-/Br-/I- all have a ceiling of zero; polyhalides such as
+`Br[Br-]Br` and `I[I-]I` load permissively but fail this bounded covalent-valence policy.
 
 Loading records valence counts before aromaticity normalization replaces written
 bond orders, so post-load validation can still detect an over-valent input atom.
@@ -153,9 +155,19 @@ stability, ligand distinctness, stereogenicity and general chemical feasibility
 are not validated. Neutral hypervalent nitrogen is rejected rather than rewritten
 into a charged representation. Passing validation means only passing these rules.
 
-Parsing, indexing and similarity search do not invoke chemical validation and have
-no validation options. Call the validation method explicitly when needed after
-loading. Index format remains version 1.
+Parsing never invokes chemical validation. Library callers can call the method
+explicitly after loading. The existing `index_file` and `similarity_search` APIs
+remain permissive; `index_file_with_options` and `similarity_search_with_options`
+accept `IndexOptions` and `SearchOptions` with a `validate` field to request that
+separate post-load step before fingerprinting.
+
+Append `--validate` as the last argument to either CLI to select the same step.
+Indexing counts validation failures as skipped records and stores empty fingerprints,
+just as for loading failures. Search reports a validation error for an invalid query.
+The search switch checks only the loaded query, not records already in the index.
+Rebuild an index with `--validate` to exclude failed dataset records. The chosen
+validation policy is not stored in the index; accepted fingerprints and index
+format version 1 remain unchanged.
 
 ## Known gaps
 

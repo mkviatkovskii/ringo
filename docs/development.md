@@ -34,20 +34,14 @@ POSIX shell:
 RINGO_SMILES_CORPUS=/path/to/smiles cargo +stable test --release --locked --test stereo corpus_coverage -- --ignored --nocapture
 ```
 
-The survey reports accepted/rejected counts for plain and stereo-marked records,
-plus rejection examples. It checks that file size and modification time remain
+The survey loads every record once and reports accepted/rejected counts for plain
+and stereo-marked records, plus the count and examples of loaded molecules that
+fail optional post-load validation. It checks that file size and modification time remain
 unchanged during each scan. A passing survey is not a claim of complete parser
 coverage or chemical validity. The checksum-pinned baseline and complete rejection
 classification are recorded in [issue #8](https://github.com/mkviatkovskii/ringo/issues/8).
 
-With the same environment variable, survey the optional valence policy separately:
-
-```sh
-cargo +stable test --release --locked --test validation corpus_valence_coverage -- --ignored --nocapture
-```
-
-This loads each record, then reports validation passes, valence failures, and loading
-failures, with examples. A valence failure can reflect an unsupported
+A valence failure can reflect an unsupported
 representation, such as covalent metal coordination or neutral hypervalent nitrogen.
 
 ## Index compatibility during development
@@ -58,4 +52,5 @@ previously skipped records or fingerprint semantics change. Atom class/map label
 and the addition of dative-bond support leave existing covalent fingerprints unchanged.
 Square-planar and allene/cumulene tags also leave fingerprints unchanged; rebuild
 indexes to include previously rejected SP/AL-tagged records.
-Optional post-load valence validation leaves molecules, fingerprints and index behavior unchanged.
+Optional post-load validation leaves molecules and accepted fingerprints unchanged.
+Rebuild an index when changing its validation policy; the policy is not stored in the header.

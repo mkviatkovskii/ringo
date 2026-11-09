@@ -22,6 +22,9 @@ fn valence_is_optional_and_accounts_for_charge_and_hydrogens() {
         "[N-46]",
         "[Cl+3](F)(F)(F)(F)F",
         "CN1=CC=CC=C=1", // aromaticity must not hide the written nitrogen valence of five
+        "Br[Br-]Br",
+        "I[I-]I",
+        "[I-](F)(F)(F)(F)(F)F",
     ] {
         let molecule = parse_molecule(smiles).unwrap().1;
         let before = molecule.ecfp(2, 512).to_bytes();
@@ -49,6 +52,8 @@ fn valence_is_optional_and_accounts_for_charge_and_hydrogens() {
         "[Se](F)(F)(F)(F)(F)F",
         "I(F)(F)(F)(F)F",
         "[Cl-]",
+        "[Br-]",
+        "[I-]",
         "[O-][Cl+3]([O-])([O-])[O-]", // CHEMBL29216 counterion
         "[Fe+2]",
         "*",
@@ -125,34 +130,53 @@ fn indexing_and_search_do_not_validate_chemistry() {
 }
 
 #[test]
-#[ignore = "requires downloaded ChEBI/ChEMBL files; set RINGO_SMILES_CORPUS"]
-fn corpus_valence_coverage() {
-    use std::io::BufRead;
-    let root = std::env::var("RINGO_SMILES_CORPUS").unwrap();
-    for name in ["chebi_20261105.smi", "chembl_37.smi"] {
-        let path = std::path::Path::new(&root).join(name);
-        let before = std::fs::metadata(&path).unwrap();
-        let mut counts = [0usize; 3];
-        let mut examples = Vec::new();
-        for line in std::io::BufReader::new(std::fs::File::open(&path).unwrap()).lines() {
-            let line = line.unwrap();
-            let category = match parse_molecule(&line) {
-                Ok((_, molecule)) if molecule.validate().is_ok() => 0,
-                Ok(_) => {
-                    if examples.len() < 10 {
-                        examples.push(line.clone());
-                    }
-                    1
-                }
-                Err(_) => 2,
-            };
-            counts[category] += 1;
+fn cli_validation_runs_after_loading_only_when_requested() {
+    use std::process::Command;
+    let path =
+        std::env::temp_dir().join(format!("ringo-validation-cli-{}.smi", std::process::id()));
+    let filename = path.to_str().unwrap();
+    let invalid = "C(C)(C)(C)(C)C";
+    std::fs::write(
+        &path,
+        format!("CCO ethanol\n{invalid} overvalent\nC( malformed\n"),
+    )
+    .unwrap();
+    for validate in [false, true] {
+        let mut index = Command::new(env!("CARGO_BIN_EXE_ringo-index"));
+        index.args([filename, "2", "512", "2"]);
+        if validate {
+            index.arg("--validate");
         }
-        let after = std::fs::metadata(&path).unwrap();
-        assert_eq!(
-            (before.len(), before.modified().unwrap()),
-            (after.len(), after.modified().unwrap())
+        let output = index.output().unwrap();
+        assert!(output.status.success(), "{output:?}");
+        let expected_skipped = if validate { 2 } else { 1 };
+        assert!(
+            String::from_utf8_lossy(&output.stderr)
+                .contains(&format!("skipped {expected_skipped} line")),
+            "{output:?}"
         );
-        println!("{name}: [validation passed, validation failed, loading failed] = {counts:?}; examples={examples:?}");
+        for query in ["CCO", invalid] {
+            let mut search = Command::new(env!("CARGO_BIN_EXE_ringo-search"));
+            search.args([filename, query, "0", "10"]);
+            if validate {
+                search.arg("--validate");
+            }
+            let output = search.output().unwrap();
+            if validate && query == invalid {
+                assert!(!output.status.success(), "{output:?}");
+                assert!(
+                    String::from_utf8_lossy(&output.stderr).contains("query validation failed"),
+                    "{output:?}"
+                );
+            } else {
+                assert!(output.status.success(), "{output:?}");
+                assert_eq!(
+                    String::from_utf8_lossy(&output.stdout).lines().count(),
+                    if validate { 1 } else { 2 }
+                );
+            }
+        }
     }
+    std::fs::remove_file(filename.to_owned() + ".fp").unwrap();
+    std::fs::remove_file(path).unwrap();
 }

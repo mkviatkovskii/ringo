@@ -106,13 +106,13 @@ fn maximum_valence(element: u8, charge: i8) -> Result<Option<u8>, ()> {
         return Err(());
     }
     let maximum = match isoelectronic {
-        10 | 18 | 36 => 0,
+        10 | 18 | 36 | 54 => 0,
         4 | 8 => 2,
         5 | 7 | 13 | 31 | 49 => 3,
         6 | 14 | 32 | 50 => 4,
         9 | 17 | 35 => 1,
         15 | 33 | 51 | 53 => 5,
-        16 | 34 | 52 | 54 => 6,
+        16 | 34 | 52 => 6,
         _ => return Err(()),
     };
     Ok(Some(maximum))

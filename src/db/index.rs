@@ -11,6 +11,15 @@ use std::io::{self, BufRead, BufReader, BufWriter, Read, Seek, Write};
 /// Lines fingerprinted in parallel per batch: enough to keep every core busy, a few MB of memory
 pub const DEFAULT_BATCH_LINES: usize = 65_536;
 
+#[derive(Clone, Copy, Debug)]
+pub struct IndexOptions {
+    pub radius: usize,
+    pub bits: usize,
+    pub batch_lines: usize,
+    /// Run `Molecule::validate()` after loading each record, before fingerprinting.
+    pub validate: bool,
+}
+
 /// Writes `<smiles_file>.fp` with ECFP fingerprints of the given radius and length
 /// (a positive multiple of 64), and returns how many lines could not be parsed.
 /// Those lines get an empty fingerprint, so records stay aligned with lines.
@@ -22,6 +31,26 @@ pub fn index_file(
     bits: usize,
     batch_lines: usize,
 ) -> io::Result<usize> {
+    index_file_with_options(
+        smiles_file,
+        IndexOptions {
+            radius,
+            bits,
+            batch_lines,
+            validate: false,
+        },
+    )
+}
+
+/// Builds an index with explicit options. Loading and optional validation failures
+/// are counted as skipped records and stored as empty fingerprints.
+pub fn index_file_with_options(smiles_file: &str, options: IndexOptions) -> io::Result<usize> {
+    let IndexOptions {
+        radius,
+        bits,
+        batch_lines,
+        validate,
+    } = options;
     let header = IndexHeader::new(radius, bits)
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
     if batch_lines == 0 {
@@ -79,6 +108,7 @@ pub fn index_file(
                     .map(|(_, line)| {
                         parse_molecule(line.trim_end_matches(['\n', '\r']))
                             .ok()
+                            .filter(|(_, molecule)| !validate || molecule.validate().is_ok())
                             .map(|(_, molecule)| molecule.ecfp(radius, bits))
                     })
                     .collect::<Vec<_>>()

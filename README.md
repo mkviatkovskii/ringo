@@ -37,22 +37,25 @@ CCO ethanol
 CC(=O)O acetic_acid
 ```
 
-The indexer reports how many records could not be parsed. Those records are omitted
+The indexer reports how many records could not be parsed or failed enabled validation. Those records are omitted
 from search results. An unsupported or malformed query produces an error.
 
 ## Command-line options
 
 ```text
-ringo-index <smiles_file> [radius=2] [bits=512] [batch_lines=65536]
-ringo-search <smiles_file> <query> <min_similarity> <limit> [max_similarity=1.0] [best|first]
+ringo-index <smiles_file> [radius=2] [bits=512] [batch_lines=65536] [--validate]
+ringo-search <smiles_file> <query> <min_similarity> <limit> [max_similarity=1.0] [best|first] [--validate]
 ```
 
 The index stores its fingerprint radius and bit count; queries use those same
 parameters. Radius 2 corresponds to ECFP4.
 
-Molecule loading is permissive. Library callers can optionally run
-`molecule.validate()` after loading; indexing and search do not run chemical
-validation. See the [validation policy and limits](docs/smiles.md#optional-molecule-validation).
+Molecule loading is permissive. Append `--validate` to either command to run the
+optional `molecule.validate()` step after loading and before fingerprinting.
+Indexing skips failed records; search rejects a query that fails validation.
+Search does not revalidate indexed records, so build the index with `--validate`
+to exclude records that fail the checks. See the
+[validation policy and limits](docs/smiles.md#optional-molecule-validation).
 
 Search includes scores between the minimum and maximum, inclusive. The default
 `best` mode returns the most similar records first, up to the limit; equal scores

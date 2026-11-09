@@ -23,6 +23,16 @@ pub enum SearchMode {
     First,
 }
 
+#[derive(Clone, Copy, Debug)]
+pub struct SearchOptions {
+    pub min_similarity: f32,
+    pub max_similarity: f32,
+    pub limit: usize,
+    pub mode: SearchMode,
+    /// Run `Molecule::validate()` on the loaded query, before fingerprinting.
+    pub validate: bool,
+}
+
 /// Returns records whose similarity to `query` is in `min_similarity..=max_similarity`.
 pub fn similarity_search(
     smiles_file: &str,
@@ -32,14 +42,35 @@ pub fn similarity_search(
     limit: usize,
     mode: SearchMode,
 ) -> io::Result<Vec<SearchResult>> {
-    let query = parse_molecule(query)
-        .map_err(|_| {
-            io::Error::new(
-                io::ErrorKind::InvalidInput,
-                format!("could not parse query {query}"),
-            )
-        })?
-        .1;
+    similarity_search_with_options(
+        smiles_file,
+        query,
+        SearchOptions {
+            min_similarity,
+            max_similarity,
+            limit,
+            mode,
+            validate: false,
+        },
+    )
+}
+
+/// Searches with explicit options. Optional validation applies to the loaded query,
+/// not to records already stored in the index.
+pub fn similarity_search_with_options(
+    smiles_file: &str,
+    query: &str,
+    options: SearchOptions,
+) -> io::Result<Vec<SearchResult>> {
+    let invalid_query = |message| io::Error::new(io::ErrorKind::InvalidInput, message);
+    let (_, query) = parse_molecule(query)
+        .map_err(|_| invalid_query(format!("could not parse query {query}")))?;
+
+    if options.validate {
+        query
+            .validate()
+            .map_err(|error| invalid_query(format!("query validation failed: {error}")))?;
+    }
 
     // smiles file
     let fis = File::open(smiles_file).map_err(with_path(smiles_file))?;
@@ -113,7 +144,7 @@ pub fn similarity_search(
             .ok()
             .and_then(|group_len| start.checked_add(group_len))
             .ok_or_else(bad_table)?;
-        if can_reach(ones, query_ones, min_similarity) {
+        if can_reach(ones, query_ones, options.min_similarity) {
             first.get_or_insert(start);
             last = end;
         }
@@ -129,16 +160,16 @@ pub fn similarity_search(
         item_size,
         &query_words,
         query_ones,
-        min_similarity..=max_similarity,
-        limit,
-        mode,
+        options.min_similarity..=options.max_similarity,
+        options.limit,
+        options.mode,
     )?;
-    if mode == SearchMode::Best {
+    if options.mode == SearchMode::Best {
         // best first, ties in line order
         // shortcut: keeps every hit in memory, use a bounded BinaryHeap if low thresholds on huge files run out of memory
         hits.sort_unstable_by(|a, b| b.0.total_cmp(&a.0).then(a.1.cmp(&b.1)));
     }
-    hits.truncate(limit);
+    hits.truncate(options.limit);
 
     hits.into_iter()
         .map(|(similarity, position)| {
