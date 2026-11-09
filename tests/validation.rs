@@ -19,6 +19,8 @@ fn valence_is_optional_and_accounts_for_charge_and_hydrogens() {
         "[H-]C",
         "[C-](C)(C)(C)C",
         "[N+127]",
+        "[N-46]",
+        "[Cl+3](F)(F)(F)(F)F",
     ] {
         assert!(parse_molecule(smiles).is_ok(), "permissive: {smiles}");
         assert!(
@@ -51,6 +53,7 @@ fn valence_is_optional_and_accounts_for_charge_and_hydrogens() {
         "[Se](F)(F)(F)(F)(F)F",
         "I(F)(F)(F)(F)F",
         "[Cl-]",
+        "[O-][Cl+3]([O-])([O-])[O-]", // CHEMBL29216 counterion
         "[Fe+2]",
         "*",
     ] {

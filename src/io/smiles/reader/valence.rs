@@ -65,21 +65,28 @@ fn maximum_valence(element: u8, charge: i8) -> ModalResult<Option<u8>> {
             _ => Err(error()),
         };
     }
-    if !(-2..=2).contains(&charge) {
-        return Err(error());
-    }
     if matches!((element, charge), (15 | 33, -2) | (16 | 34, -1)) {
         return Ok(Some(5));
     }
     // Charged atoms use the isoelectronic element's ceiling (RDKit valence policy).
     let isoelectronic = i16::from(element) - i16::from(charge);
+    let same_period = match element {
+        5..=9 => (3..=10).contains(&isoelectronic),
+        14..=17 => (11..=18).contains(&isoelectronic),
+        33..=35 => (19..=36).contains(&isoelectronic),
+        53 => (37..=54).contains(&isoelectronic),
+        _ => false,
+    };
+    if !same_period {
+        return Err(error());
+    }
     let maximum = match isoelectronic {
-        2 | 10 | 18 | 36 => 0,
+        10 | 18 | 36 => 0,
         4 | 8 => 2,
-        5 | 7 | 13 | 31 => 3,
-        6 | 14 | 32 => 4,
+        5 | 7 | 13 | 31 | 49 => 3,
+        6 | 14 | 32 | 50 => 4,
         9 | 17 | 35 => 1,
-        15 | 33 | 53 => 5,
+        15 | 33 | 51 | 53 => 5,
         16 | 34 | 52 | 54 => 6,
         _ => return Err(error()),
     };

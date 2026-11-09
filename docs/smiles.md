@@ -109,8 +109,9 @@ Cl, As, Se, Br and I. Neutral ceilings are 1 for H/F/Cl/Br, 2 for O, 3 for B/N,
 4 for C/Si, 5 for P/As/I and 6 for S/Se. Lower valences are accepted, including
 bracket atoms with incomplete valence; this is not radical perception.
 
-For these main-group atoms, charges from -2 through +2 use the ceiling of the
-isoelectronic element when the table supplies one. P/As with charge -2 and S/Se
+For these main-group atoms, charged forms use the ceiling of the isoelectronic
+element in the same periodic-table row when the table supplies one. Thus the
+common perchlorate spelling `[O-][Cl+3]([O-])([O-])[O-]` is supported. P/As with charge -2 and S/Se
 with charge -1 instead have a ceiling of 5. Unsupported charge/table combinations
 fail validation. Neutral H allows one bond; H+ and H- allow none. Other hydrogen
 charges fail validation. The policy follows the
