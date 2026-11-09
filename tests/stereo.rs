@@ -219,11 +219,24 @@ fn corpus_coverage() {
         let before = std::fs::metadata(&corpus_path).unwrap();
         let mut counts = [0usize; 4];
         let mut examples = Vec::new();
+        let mut validation_failed = 0;
+        let mut validation_examples = Vec::new();
         for line in std::io::BufReader::new(std::fs::File::open(&corpus_path).unwrap()).lines() {
             let line = line.unwrap();
             let smiles = line.split_whitespace().next().unwrap_or("");
             let stereo = smiles.contains(['@', '/', '\\']);
-            let success = parse_molecule(&line).is_ok();
+            let success = match parse_molecule(&line) {
+                Ok((_, molecule)) => {
+                    if let Err(error) = molecule.validate() {
+                        validation_failed += 1;
+                        if validation_examples.len() < 10 {
+                            validation_examples.push(format!("{line}: {error}"));
+                        }
+                    }
+                    true
+                }
+                Err(_) => false,
+            };
             counts[usize::from(stereo) * 2 + usize::from(success)] += 1;
             if stereo && !success && examples.len() < 10 {
                 examples.push(line);
@@ -236,5 +249,6 @@ fn corpus_coverage() {
             "corpus changed during scan"
         );
         println!("{name}: [plain rejected, plain accepted, stereo rejected, stereo accepted] = {counts:?}; examples={examples:?}");
+        println!("{name}: loaded then failed validation = {validation_failed}; examples={validation_examples:?}");
     }
 }

@@ -81,7 +81,7 @@ fn hydrogens_and_vacancies_keep_their_sites() {
 
 #[test]
 fn cis_and_trans_platinum_keep_different_arrangements() {
-    // RDKit Book examples with repeated ligands and dative bonds.
+    // Cis/trans complexes with repeated ligands and dative bonds.
     let cis = "Cl[Pt@SP1](Cl)(<-[NH3])<-[NH3]";
     let trans = "Cl[Pt@SP2](Cl)(<-[NH3])<-[NH3]";
     assert_eq!(opposite_elements(cis), [[7, 17], [7, 17]]);

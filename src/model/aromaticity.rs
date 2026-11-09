@@ -25,7 +25,7 @@ impl Molecule {
             .collect();
         let mut aromatic = alone.clone();
         // fused pairs such as azulene (5 + 7 atoms) are aromatic only around the
-        // outside; the bond they share stays single, as in RDKit (it is 1.50 Å long)
+        // outside; the bond they share stays single
         let mut shared_bonds: HashSet<EdgeIndex> = HashSet::new();
         for i in 0..rings.len() {
             for j in i + 1..rings.len() {
