@@ -1,3 +1,4 @@
+mod allene;
 mod atom;
 mod bond;
 mod charge;

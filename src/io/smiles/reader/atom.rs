@@ -13,6 +13,7 @@ use winnow::prelude::*;
 pub(crate) enum Chirality {
     Default(u8),
     TH(u8),
+    AL(u8),
     SP(u8),
     TB(u8),
     OH(u8),
@@ -26,6 +27,7 @@ fn parse_chirality(input: &mut &str) -> ModalResult<Chirality> {
     }
     for (name, max, make) in [
         ("TH", 2, Chirality::TH as fn(u8) -> Chirality),
+        ("AL", 2, Chirality::AL),
         ("SP", 3, Chirality::SP),
         ("TB", 20, Chirality::TB),
         ("OH", 30, Chirality::OH),

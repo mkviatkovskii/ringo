@@ -293,11 +293,7 @@ pub(crate) mod test {
         let smiles_file = dir.path().join("m.smi");
         // Unsupported syntax and bond-order overflow must not abort indexing.
         let overflow = format!("C{}", "(C)".repeat(300));
-        std::fs::write(
-            &smiles_file,
-            format!("CCO\nNC(Br)=[C@AL1]=C(O)C\n{overflow}\nCCC\n"),
-        )
-        .unwrap();
+        std::fs::write(&smiles_file, format!("CCO\nC~C\n{overflow}\nCCC\n")).unwrap();
 
         let skipped =
             index_file(smiles_file.to_str().unwrap(), 2, 512, DEFAULT_BATCH_LINES).unwrap();
