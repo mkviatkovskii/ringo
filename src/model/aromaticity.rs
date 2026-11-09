@@ -7,8 +7,8 @@ use std::collections::{HashMap, HashSet, VecDeque};
 
 impl Molecule {
     /// Marks every ring that obeys Hückel's rule (4n+2 π electrons) as aromatic: its
-    /// atoms aromatic, its bonds `Aromatic`. A ring written in lowercase, or with `:`
-    /// bonds, that fails the rule is still taken as aromatic, as written. Any other
+    /// atoms aromatic, its bonds `Aromatic`. A ring written with aromatic bonds only
+    /// (lowercase atoms, or `:`) that fails the rule is still taken as aromatic. Any other
     /// `Aromatic` bond becomes single. Afterwards a molecule has the same atoms and bonds
     /// whether it was written in Kekulé form ("C1=CC=CC=C1") or aromatic form ("c1ccccc1").
     pub fn perceive_aromaticity(&mut self) {
@@ -26,27 +26,34 @@ impl Molecule {
         let mut aromatic = alone.clone();
         // fused pairs such as azulene (5 + 7 atoms) are aromatic only around the
         // outside; the bond they share stays single
-        let mut shared_bonds: HashSet<EdgeIndex> = HashSet::new();
+        let mut pairs = Vec::new();
         for i in 0..rings.len() {
             for j in i + 1..rings.len() {
-                if aromatic[i] || aromatic[j] {
-                    continue;
-                }
                 let shared: Vec<NodeIndex> = rings[i]
                     .iter()
                     .filter(|node| rings[j].contains(node))
                     .copied()
                     .collect();
-                let [a, b] = shared[..] else {
-                    continue;
-                };
-                let union: HashSet<NodeIndex> = rings[i].iter().chain(&rings[j]).copied().collect();
-                if self.huckel(union.into_iter(), &ring_bonds) {
-                    aromatic[i] = true;
-                    aromatic[j] = true;
-                    shared_bonds
-                        .extend(self.graph.find_edge_undirected(a, b).map(|(edge, _)| edge));
+                if let [a, b] = shared[..] {
+                    if let Some((edge, _)) = self.graph.find_edge_undirected(a, b) {
+                        pairs.push((i, j, edge));
+                    }
                 }
+            }
+        }
+        // when one ring could pair with either of two others, as in phenalene, a shared bond
+        // written `-` picks the pair, so a written molecule reads back the same in any order
+        pairs.sort_by_key(|&(_, _, edge)| self.graph[edge].order == BondOrder::Aromatic);
+        let mut shared_bonds: HashSet<EdgeIndex> = HashSet::new();
+        for (i, j, edge) in pairs {
+            if aromatic[i] || aromatic[j] {
+                continue;
+            }
+            let union: HashSet<NodeIndex> = rings[i].iter().chain(&rings[j]).copied().collect();
+            if self.huckel(union.into_iter(), &ring_bonds) {
+                aromatic[i] = true;
+                aromatic[j] = true;
+                shared_bonds.insert(edge);
             }
         }
         for (i, ring) in rings.iter().enumerate() {
@@ -80,11 +87,12 @@ impl Molecule {
         }
     }
 
+    /// Whether every bond of the ring was written aromatic: with no symbol between lowercase
+    /// atoms, or with `:`. A `-` or `=` stands as written, so the 4-ring of biphenylene,
+    /// `c1ccc2c(c1)-c1ccccc1-2`, isn't aromatic although its atoms are.
     fn written_aromatic(&self, ring: &[NodeIndex]) -> bool {
-        ring.iter().all(|&node| self.graph[node].aromatic)
-            || self
-                .ring_edges(ring)
-                .all(|edge| self.graph[edge].order == BondOrder::Aromatic)
+        self.ring_edges(ring)
+            .all(|edge| self.graph[edge].order == BondOrder::Aromatic)
     }
 
     /// Whether these atoms hold 4n+2 π electrons, each of them giving some.
@@ -165,65 +173,89 @@ impl Molecule {
             .filter_map(|(&a, &b)| self.graph.find_edge_undirected(a, b).map(|(edge, _)| edge))
     }
 
-    /// The shortest ring through each bond, in ring order, without duplicates. For the
-    /// small fused rings of drug-like molecules this is the usual smallest set of rings.
+    /// Every shortest ring through each bond, in ring order, without duplicates. Taking all
+    /// of them when several tie, as around the central atom of phenalene, keeps the set the
+    /// same whatever the atom order. For the small fused rings of drug-like molecules this is
+    /// the usual smallest set of rings.
     fn rings(&self) -> Vec<Vec<NodeIndex>> {
-        let mut seen: HashSet<Vec<NodeIndex>> = HashSet::new();
+        let mut seen: HashSet<Vec<EdgeIndex>> = HashSet::new();
         let mut rings = Vec::new();
         for edge in (&self.graph)
             .edge_references()
             .filter(|edge| edge.weight().order != BondOrder::Dative)
         {
-            let Some(ring) = self.shortest_path_without(edge.source(), edge.target(), edge.id())
-            else {
-                continue;
-            };
-            let mut key = ring.clone();
-            key.sort_unstable();
-            if seen.insert(key) {
-                rings.push(ring);
+            for ring in self.shortest_paths_without(edge.source(), edge.target(), edge.id()) {
+                let mut key: Vec<EdgeIndex> = self.ring_edges(&ring).collect();
+                key.sort_unstable();
+                if seen.insert(key) {
+                    rings.push(ring);
+                }
             }
         }
         rings
     }
 
-    /// Breadth-first search from `from` to `to` that may not use `skip`; the path
-    /// closes into a ring through `skip`.
-    fn shortest_path_without(
+    /// The bonds a ring search may follow from `node`: all but `skip` and dative bonds.
+    fn ring_neighbours(
+        &self,
+        node: NodeIndex,
+        skip: EdgeIndex,
+    ) -> impl Iterator<Item = NodeIndex> + '_ {
+        self.graph
+            .edges(node)
+            .filter(move |edge| edge.id() != skip && edge.weight().order != BondOrder::Dative)
+            .map(move |edge| {
+                if edge.source() == node {
+                    edge.target()
+                } else {
+                    edge.source()
+                }
+            })
+    }
+
+    /// All shortest paths from `to` back to `from` that don't use `skip`; each closes into a
+    /// ring through `skip`.
+    fn shortest_paths_without(
         &self,
         from: NodeIndex,
         to: NodeIndex,
         skip: EdgeIndex,
-    ) -> Option<Vec<NodeIndex>> {
-        let mut parent: HashMap<NodeIndex, NodeIndex> = HashMap::from([(from, from)]);
+    ) -> Vec<Vec<NodeIndex>> {
+        let mut distance: HashMap<NodeIndex, usize> = HashMap::from([(from, 0)]);
         let mut queue = VecDeque::from([from]);
         while let Some(node) = queue.pop_front() {
             if node == to {
-                let mut path = vec![to];
-                let mut current = to;
-                while current != from {
-                    current = parent[&current];
-                    path.push(current);
-                }
-                return Some(path);
+                break;
             }
-            for edge in self
-                .graph
-                .edges(node)
-                .filter(|edge| edge.id() != skip && edge.weight().order != BondOrder::Dative)
-            {
-                let next = if edge.source() == node {
-                    edge.target()
-                } else {
-                    edge.source()
-                };
-                if let Entry::Vacant(entry) = parent.entry(next) {
-                    entry.insert(node);
+            let next_distance = distance[&node] + 1;
+            for next in self.ring_neighbours(node, skip) {
+                if let Entry::Vacant(entry) = distance.entry(next) {
+                    entry.insert(next_distance);
                     queue.push_back(next);
                 }
             }
         }
-        None
+        if !distance.contains_key(&to) {
+            return Vec::new();
+        }
+        // walk back from `to`, one step closer to `from` each time
+        let mut paths = Vec::new();
+        let mut stack = vec![vec![to]];
+        while let Some(path) = stack.pop() {
+            let last = path[path.len() - 1];
+            if last == from {
+                paths.push(path);
+                continue;
+            }
+            for previous in self.ring_neighbours(last, skip) {
+                if distance.get(&previous) == Some(&(distance[&last] - 1)) {
+                    let mut longer = path.clone();
+                    longer.push(previous);
+                    stack.push(longer);
+                }
+            }
+        }
+        paths
     }
 }
 
@@ -285,13 +317,16 @@ mod tests {
             .count();
         // two benzene rings; the bond they share with the 5-ring is single
         assert_eq!(aromatic, 12);
-        let m = parse_molecule("c1ccccc1:c1ccccc1").unwrap().1;
-        let single = m
-            .graph
-            .edge_weights()
-            .filter(|bond| bond.order == BondOrder::Single)
-            .count();
-        assert_eq!(single, 1);
+        let single = |smiles| {
+            let m = parse_molecule(smiles).unwrap().1;
+            m.graph
+                .edge_weights()
+                .filter(|bond| bond.order == BondOrder::Single)
+                .count()
+        };
+        assert_eq!(single("c1ccccc1:c1ccccc1"), 1);
+        // biphenylene's 4-ring has aromatic atoms but is not aromatic itself
+        assert_eq!(single("c1ccc2c(c1)-c1ccccc1-2"), 2);
     }
 
     #[test]
@@ -337,6 +372,8 @@ mod tests {
             ("C1=CC=C(C=C1)C1=CC=CC=C1", "c1ccccc1c1ccccc1"),
             ("C1C2=CC=CC=C2C2=CC=CC=C12", "c1ccc2c(c1)Cc1ccccc1-2"),
             ("c1ccc2c(c1)Cc1ccccc12", "c1ccc2c(c1)Cc1ccccc1-2"),
+            // biphenylene: the bonds written single between the benzene rings stay single
+            ("C1=CC=C2C(=C1)C1=CC=CC=C12", "c1ccc2c(c1)-c1ccccc1-2"),
         ] {
             let a = parse_molecule(kekule).unwrap().1.ecfp(2, 512);
             let b = parse_molecule(aromatic).unwrap().1.ecfp(2, 512);

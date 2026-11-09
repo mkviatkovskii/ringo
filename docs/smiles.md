@@ -14,7 +14,10 @@ as atomic number zero; it does not turn a similarity query into a SMARTS pattern
 Ring labels are one digit or `%` followed by two digits.
 
 Supported Kekulé and aromatic spellings are normalized by aromaticity perception.
-Hydrogens are counted before normalization. The molecule graph is exposed read-only
+A ring that fails Hückel's rule stays aromatic only if all its bonds were written
+aromatic: lowercase atoms with no bond symbol, or `:`. An explicit `-` or `=` stands,
+so the 4-ring of biphenylene, `c1ccc2c(c1)-c1ccccc1-2`, is not aromatic although
+its atoms are. Hydrogens are counted before normalization. The molecule graph is exposed read-only
 so external edits cannot leave computed hydrogen or stereo metadata stale.
 
 ## Atom maps and classes
@@ -161,6 +164,32 @@ stability, ligand distinctness, stereogenicity and general chemical feasibility
 are not validated. Neutral hypervalent nitrogen is rejected rather than rewritten
 into a charged representation.
 
+## Writing SMILES
+
+`writer::write_smiles(&molecule)` writes a molecule in reading order;
+`writer::write_smiles_ranked(&molecule, &ranks)` starts each component at its
+lowest-ranked atom and visits neighbours in rank order, branches first. Reading the
+output back gives the same molecule: elements, isotopes, charges, hydrogen counts,
+atom classes, aromaticity, bond orders, dative bonds and stereo.
+
+- Atoms go in brackets only when the organic subset can't express them, and aromatic
+  atoms are lowercase. An aromatic atom with no lowercase symbol, such as silicon,
+  is written `[Si]` with `:` bonds.
+- A single bond between two aromatic atoms is written `-`; ring-bond symbols go on
+  the opening digit. Ring digits are reused once closed, but not on the atom that
+  closes them, and go on to `%10`–`%99`.
+- `@`/`@@` are recomputed for the ligand order of the output, for tetrahedral centres
+  and allenes. `/` and `\` are chosen again, then checked against what the reader
+  makes of them.
+- A configuration the output can't express is an error, never a different molecule:
+  square-planar, trigonal-bipyramidal and octahedral centres whose ligands come out in
+  a different order (their permutation numbers aren't renumbered yet), double-bond
+  configurations that `/` and `\` can't mark in that order, and more than 99 open
+  rings.
+
+This is the first part of canonical SMILES
+([#63](https://github.com/mkviatkovskii/ringo/issues/63)); canonical ranking comes next.
+
 ## Known gaps
 
 - Enhanced stereo and CXSMILES interpretation. Whitespace-separated extension
@@ -168,7 +197,7 @@ into a charged representation.
 - Tilde (`~`) bonds and extended ring labels such as `%(100)`.
 - Some directional/aromatic ring cases; the current parser rejects these rather
   than discarding their stereo annotations.
-- CIP assignment and canonical SMILES writing.
+- CIP assignment and canonical SMILES; the writer above writes a given order.
 
 [Issue #8](https://github.com/mkviatkovskii/ringo/issues/8) records corpus coverage
 and remaining cases. Further core syntax/stereo work is tracked in
