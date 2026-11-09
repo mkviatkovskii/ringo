@@ -55,6 +55,8 @@ positional arguments.
 
 Add `--validate` to run optional post-load checks before fingerprinting; see the
 [validation policy and limits](docs/smiles.md#optional-molecule-validation).
+Search checks only the query; build the index with `--validate` to leave out records
+that fail.
 
 Search includes scores between the minimum and maximum, inclusive. The default
 `best` mode returns the most similar records first, up to the limit; equal scores
