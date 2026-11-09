@@ -1,10 +1,11 @@
 use crate::model::bond::BondOrder;
 use crate::model::molecule::Molecule;
+use fixedbitset::FixedBitSet;
 use petgraph::algo::maximum_matching;
 use petgraph::graph::UnGraph;
 use petgraph::stable_graph::{EdgeIndex, NodeIndex};
-use petgraph::visit::EdgeRef;
-use std::collections::{BTreeMap, HashMap};
+use petgraph::visit::{EdgeRef, IntoEdgeReferences};
+use std::collections::HashMap;
 
 impl Molecule {
     /// Runs optional post-load chemical checks without modifying the molecule: main-group
@@ -58,13 +59,14 @@ impl Molecule {
             .node_indices()
             .filter(|&node| self.aromatic_as_written(node))
             .collect();
-        let mut ring_bonds: BTreeMap<EdgeIndex, bool> = BTreeMap::new();
+        if aromatic.is_empty() {
+            return Ok(());
+        }
+        let ring_bonds = self.covalent_ring_bonds();
         for &node in &aromatic {
             let mut in_ring = false;
             for edge in self.graph.edges(node) {
-                let ring_bond = *ring_bonds
-                    .entry(edge.id())
-                    .or_insert_with(|| self.is_ring_bond(edge.id()));
+                let ring_bond = ring_bonds.contains(edge.id().index());
                 let other = if edge.source() == node {
                     edge.target()
                 } else {
@@ -72,7 +74,7 @@ impl Molecule {
                 };
                 if ring_bond
                     && self.graph[other].element.atomic_number == 0
-                    && self.wildcard_in_aromatic_system(edge.id())
+                    && self.wildcard_in_aromatic_system(edge.id(), &ring_bonds)
                 {
                     return Err(format!(
                         "{}: a wildcard atom in an aromatic ring is not supported",
@@ -95,14 +97,13 @@ impl Molecule {
         for &node in aromatic.iter().filter(|&&node| self.needs_ring_pi(node)) {
             index.insert(node, pairing.add_node(node));
         }
-        for (&edge, _) in ring_bonds.iter().filter(|&(_, &ring_bond)| ring_bond) {
-            if self.written_order(edge) != BondOrder::Aromatic {
+        for edge in (&self.graph).edge_references() {
+            if !ring_bonds.contains(edge.id().index())
+                || self.written_order(edge.id()) != BondOrder::Aromatic
+            {
                 continue;
             }
-            let Some((a, b)) = self.graph.edge_endpoints(edge) else {
-                continue;
-            };
-            if let (Some(&a), Some(&b)) = (index.get(&a), index.get(&b)) {
+            if let (Some(&a), Some(&b)) = (index.get(&edge.source()), index.get(&edge.target())) {
                 pairing.add_edge(a, b, ());
             }
         }
@@ -124,9 +125,9 @@ impl Molecule {
     /// written aromatic system: the bond is written aromatic, or the shortest ring through
     /// it is written aromatic apart from wildcards, as in `c1cc*cc1`. A wildcard in a fused
     /// non-aromatic ring, as in `c1ccc2c(c1)C*2`, is not.
-    fn wildcard_in_aromatic_system(&self, edge: EdgeIndex) -> bool {
+    fn wildcard_in_aromatic_system(&self, edge: EdgeIndex, ring_bonds: &FixedBitSet) -> bool {
         self.written_order(edge) == BondOrder::Aromatic
-            || self.ring_through(edge).is_some_and(|ring| {
+            || self.ring_through(edge, ring_bonds).is_some_and(|ring| {
                 ring.iter().all(|&node| {
                     self.graph[node].element.atomic_number == 0 || self.aromatic_as_written(node)
                 })
