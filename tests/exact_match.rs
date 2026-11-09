@@ -144,6 +144,22 @@ fn stereo_that_symmetry_undoes_is_ignored() {
             "C[C@@H](O)[C@@H](O)[C@@H](C)O",
         ),
         ("C[C@@H](O)[C@H](O)[C@@H](C)O", "C[C@@H](O)C(O)[C@@H](C)O"),
+        // the two branches are alike, dative direction included
+        (
+            "F[C@H]([NH2]->[Cu])[NH2]->[Cu]",
+            "FC([NH2]->[Cu])[NH2]->[Cu]",
+        ),
+    ]);
+    // dative direction tells the branches apart
+    assert_different(&[
+        (
+            "F[C@H]([NH2]->[Cu])[NH2]<-[Cu]",
+            "F[C@@H]([NH2]->[Cu])[NH2]<-[Cu]",
+        ),
+        (
+            "F[C@H]([NH2]->[Cu])[NH2]<-[Cu]",
+            "FC([NH2]->[Cu])[NH2]<-[Cu]",
+        ),
     ]);
     // the meso forms: the middle carbon is pseudo-asymmetric, its branches differ only by
     // their own stereo
@@ -183,6 +199,9 @@ fn allenes_compare_as_collapsed_tetrahedra() {
     assert_different(&[
         ("NC(Br)=[C@]=C(O)C", "NC(Br)=[C@AL2]=C(O)C"),
         ("NC(Br)=[C@]=C(O)C", "NC(Br)=C=C(O)C"),
+        // one hydrogen on each terminal is real stereo
+        ("OC=[C@]=CF", "OC=[C@@]=CF"),
+        ("OC=[C@]=CF", "OC=C=CF"),
     ]);
 }
 

@@ -50,7 +50,8 @@ enum Fate {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Site {
     Atom(usize),
-    Hydrogen,
+    /// A hydrogen, by the atom it is on, so an allene's two terminal hydrogens differ.
+    Hydrogen(usize),
     LonePair,
     Twin,
 }
@@ -59,6 +60,7 @@ impl Site {
     fn mapped(self, mapping: &[usize]) -> Site {
         match self {
             Site::Atom(atom) => Site::Atom(mapping[atom]),
+            Site::Hydrogen(atom) => Site::Hydrogen(mapping[atom]),
             other => other,
         }
     }
@@ -254,14 +256,7 @@ impl Folded {
 
     /// Whether `target` is the same component.
     fn matches(&self, target: &Folded) -> Result<bool, ExactMatchError> {
-        any_mapping(self, target, |mapping| {
-            let datives = self.datives.iter().all(|&(donor, acceptor)| {
-                target
-                    .datives
-                    .contains(&(mapping[donor], mapping[acceptor]))
-            });
-            Ok(datives && self.stereo_agrees(target, mapping)?)
-        })
+        any_mapping(self, target, |mapping| self.stereo_agrees(target, mapping))
     }
 
     /// The folded graph, what became of each source atom, and the dative bonds.
@@ -369,30 +364,35 @@ impl Folded {
         graph: &FoldedGraph,
         fates: &[Fate],
     ) -> Result<Vec<Stereo>, ExactMatchError> {
-        let site_of = |node: NodeIndex| match fates[node.index()] {
-            Fate::Kept(atom) => Site::Atom(atom),
-            Fate::Hydrogen => Site::Hydrogen,
-            Fate::Twin => Site::Twin,
-        };
-        // a hydrogen or twin is an end atom, so it is never a centre or a double-bond end
+        // a hydrogen or twin is an end atom, so it is never a centre, an allene terminal or a
+        // double-bond end
         let atom = |node: NodeIndex| match fates[node.index()] {
             Fate::Kept(atom) => Ok(atom),
             _ => Err(ExactMatchError::UnsupportedStereo),
         };
-        let site = |ligand: Ligand| match ligand {
-            Ligand::Atom(node) => Ok(site_of(node)),
-            Ligand::Hydrogen => Ok(Site::Hydrogen),
+        // a ligand on the folded atom `owner`
+        let site = |ligand: Ligand, owner: usize| match ligand {
+            Ligand::Atom(node) => Ok(match fates[node.index()] {
+                Fate::Kept(atom) => Site::Atom(atom),
+                Fate::Hydrogen => Site::Hydrogen(owner),
+                Fate::Twin => Site::Twin,
+            }),
+            Ligand::Hydrogen => Ok(Site::Hydrogen(owner)),
             Ligand::LonePair => Ok(Site::LonePair),
             Ligand::Vacancy => Err(ExactMatchError::UnsupportedStereo),
         };
-        // tag 1 is @, 2 is @@
-        let parity = |center: NodeIndex, ligands: &[Ligand], tag: u8| {
-            let ligands: Vec<Site> = ligands.iter().map(|&l| site(l)).collect::<Result<_, _>>()?;
+        // tag 1 is @, 2 is @@; `owners` are the atoms the ligands are on
+        let parity = |center: NodeIndex, ligands: &[Ligand], owners: [usize; 4], tag: u8| {
+            if ligands.len() != 4 {
+                return Err(ExactMatchError::UnsupportedStereo);
+            }
+            let mut sites = [Site::LonePair; 4];
+            for ((slot, &ligand), owner) in sites.iter_mut().zip(ligands).zip(owners) {
+                *slot = site(ligand, owner)?;
+            }
             Ok(Stereo::Parity {
                 center: atom(center)?,
-                ligands: ligands
-                    .try_into()
-                    .map_err(|_| ExactMatchError::UnsupportedStereo)?,
+                ligands: sites,
                 clockwise: match tag {
                     1 => false,
                     2 => true,
@@ -405,45 +405,45 @@ impl Folded {
             let Configuration::Tetrahedral(tag) = center.configuration else {
                 return Err(ExactMatchError::UnsupportedStereo);
             };
-            stereo.push(parity(center.center, &center.ligands, tag)?);
+            stereo.push(parity(
+                center.center,
+                &center.ligands,
+                [atom(center.center)?; 4],
+                tag,
+            )?);
         }
         for allene in molecule.allene_stereo() {
-            stereo.push(parity(allene.center, &allene.ligands, allene.permutation)?);
+            let terminal = |end: Option<&NodeIndex>| end.map(|node| fates[node.index()]);
+            let (Some(Fate::Kept(first)), Some(Fate::Kept(last))) =
+                (terminal(allene.axis.first()), terminal(allene.axis.last()))
+            else {
+                // a folded terminal carries only hydrogens, so there is no stereo
+                continue;
+            };
+            stereo.push(parity(
+                allene.center,
+                &allene.ligands,
+                [first, first, last, last],
+                allene.permutation,
+            )?);
         }
         for bond in molecule.double_bond_stereo() {
             let ends = [atom(bond.ends[0])?, atom(bond.ends[1])?];
-            let mut same_side = bond.same_side;
-            let mut references = [Site::Hydrogen; 2];
-            for side in 0..2 {
-                references[side] = site_of(bond.references[side]);
-                if references[side] != Site::Hydrogen {
-                    continue;
-                }
-                // a folded hydrogen: refer to the end's other substituent, opposite it
-                let other = graph
-                    .neighbors(GraphIndex::new(ends[side]))
-                    .map(petgraph::graph::NodeIndex::index)
-                    .find(|&node| node != ends[1 - side]);
-                if let Some(other) = other {
-                    references[side] = Site::Atom(other);
-                    same_side = !same_side;
-                }
-            }
+            let references = [
+                site(Ligand::Atom(bond.references[0]), ends[0])?,
+                site(Ligand::Atom(bond.references[1]), ends[1])?,
+            ];
             stereo.push(Stereo::DoubleBond {
                 ends,
                 references,
-                same_side,
+                same_side: bond.same_side,
             });
         }
-        // two hydrogens or twins on a centre or a double-bond end make it no stereo at all
+        // two alike ligands on one atom, two hydrogens or folded twins, make it no stereo at
+        // all; twins always come at least two to an atom
         stereo.retain(|element| match element {
             Stereo::Parity { ligands, .. } => {
-                !ligands.contains(&Site::Twin)
-                    && ligands
-                        .iter()
-                        .filter(|&&site| site == Site::Hydrogen)
-                        .count()
-                        < 2
+                (0..4).all(|i| (i + 1..4).all(|j| ligands[i] != ligands[j]))
             }
             Stereo::DoubleBond { ends, .. } => ends.iter().all(|&end| {
                 let key = &graph[GraphIndex::new(end)];
@@ -513,7 +513,8 @@ impl Folded {
     }
 }
 
-/// Calls `found` with each mapping of `a`'s atoms onto `b`'s, until it returns true.
+/// Calls `found` with each mapping of `a`'s atoms onto `b`'s that keeps every dative
+/// bond's donor, until it returns true.
 fn any_mapping(
     a: &Folded,
     b: &Folded,
@@ -525,16 +526,21 @@ fn any_mapping(
     }
     let mut atoms = |x: &AtomKey, y: &AtomKey| x == y;
     let mut bonds = |x: &BondOrder, y: &BondOrder| x == y;
-    let (a, b) = (&a.graph, &b.graph);
+    let (a_graph, b_graph) = (&a.graph, &b.graph);
     // equal atom and bond counts make every subgraph mapping a full isomorphism
-    let Some(mappings) = subgraph_isomorphisms_iter(&a, &b, &mut atoms, &mut bonds) else {
+    let Some(mappings) = subgraph_isomorphisms_iter(&a_graph, &b_graph, &mut atoms, &mut bonds)
+    else {
         return Ok(false);
     };
     for (tried, mapping) in mappings.enumerate() {
         if tried == MAX_MAPPINGS {
             return Err(ExactMatchError::TooSymmetric);
         }
-        if found(&mapping)? {
+        let datives = a
+            .datives
+            .iter()
+            .all(|&(donor, acceptor)| b.datives.contains(&(mapping[donor], mapping[acceptor])));
+        if datives && found(&mapping)? {
             return Ok(true);
         }
     }
