@@ -1,35 +1,57 @@
+use clap::Parser;
 use ringo::db::exact_search::exact_search;
 use ringo::db::search::{similarity_search, SearchMode};
 use std::process::ExitCode;
 
-const USAGE: &str = "usage: ringo-search <smiles_file> <query> <min_similarity> <limit> \
-                     [max_similarity=1.0] [best|first]\n       \
-                     ringo-search --exact <smiles_file> <query>";
+#[derive(Parser)]
+#[command(
+    name = "ringo-search",
+    version,
+    about = "Search a SMILES fingerprint index"
+)]
+struct Cli {
+    /// Find the records with exactly the query structure instead of similar ones
+    #[arg(long, conflicts_with_all = ["min_similarity", "limit", "validate"])]
+    exact: bool,
+    /// Indexed SMILES file
+    smiles_file: String,
+    /// Query molecule in SMILES notation
+    query: String,
+    /// Minimum similarity, inclusive
+    #[arg(required_unless_present = "exact")]
+    min_similarity: Option<f32>,
+    /// Maximum number of results
+    #[arg(required_unless_present = "exact")]
+    limit: Option<usize>,
+    /// Maximum similarity, inclusive
+    #[arg(default_value_t = 1.0)]
+    max_similarity: f32,
+    /// Return the best matches or the first matches in index order
+    #[arg(value_enum, default_value = "best")]
+    mode: SearchMode,
+    /// Validate the loaded query before fingerprinting
+    #[arg(long)]
+    validate: bool,
+}
 
 fn main() -> ExitCode {
-    let args: Vec<String> = std::env::args().skip(1).collect();
-    if args.first().map(String::as_str) == Some("--exact") {
-        let [_, smiles_file, query] = args.as_slice() else {
-            eprintln!("{USAGE}");
-            return ExitCode::from(2);
-        };
-        return search_exact(smiles_file, query);
-    }
-    let Some(args) = parse_args(&args) else {
-        eprintln!("{USAGE}");
-        return ExitCode::from(2);
+    let args = Cli::parse();
+    let (Some(min_similarity), Some(limit)) = (args.min_similarity, args.limit) else {
+        // clap requires both unless --exact is given
+        return search_exact(&args.smiles_file, &args.query);
     };
     let results = match similarity_search(
-        args.smiles_file,
-        args.query,
-        args.min_similarity,
+        &args.smiles_file,
+        &args.query,
+        min_similarity,
         args.max_similarity,
-        args.limit,
+        limit,
         args.mode,
+        args.validate,
     ) {
         Ok(results) => results,
-        Err(e) => {
-            eprintln!("ringo-search: {e}");
+        Err(error) => {
+            eprintln!("ringo-search: {error}");
             return ExitCode::FAILURE;
         }
     };
@@ -60,69 +82,62 @@ fn search_exact(smiles_file: &str, query: &str) -> ExitCode {
     ExitCode::SUCCESS
 }
 
-#[derive(Debug, PartialEq)]
-struct Args<'a> {
-    smiles_file: &'a str,
-    query: &'a str,
-    min_similarity: f32,
-    limit: usize,
-    max_similarity: f32,
-    mode: SearchMode,
-}
-
-fn parse_args(args: &[String]) -> Option<Args<'_>> {
-    if !(4..=6).contains(&args.len()) {
-        return None;
-    }
-    Some(Args {
-        smiles_file: &args[0],
-        query: &args[1],
-        min_similarity: args[2].parse().ok()?,
-        limit: args[3].parse().ok()?,
-        max_similarity: args.get(4).map_or(Some(1.0), |s| s.parse().ok())?,
-        mode: match args.get(5).map(String::as_str) {
-            None | Some("best") => SearchMode::Best,
-            Some("first") => SearchMode::First,
-            Some(_) => return None,
-        },
-    })
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{parse_args, Args};
+    use super::Cli;
+    use clap::{CommandFactory, Parser};
     use ringo::db::search::SearchMode;
 
-    fn args(list: &[&str]) -> Vec<String> {
-        list.iter().map(std::string::ToString::to_string).collect()
-    }
-
     #[test]
-    fn test_parse_args() {
+    fn command_arguments() {
+        Cli::command().debug_assert();
+        let defaults = Cli::try_parse_from(["ringo-search", "m.smi", "CCO", "0.5", "10"]).unwrap();
         assert_eq!(
-            parse_args(&args(&["m.smi", "CCO", "0.5", "10"])),
-            Some(Args {
-                smiles_file: "m.smi",
-                query: "CCO",
-                min_similarity: 0.5,
-                limit: 10,
-                max_similarity: 1.0,
-                mode: SearchMode::Best,
-            })
+            (
+                defaults.exact,
+                defaults.min_similarity,
+                defaults.limit,
+                defaults.max_similarity,
+                defaults.mode,
+                defaults.validate
+            ),
+            (false, Some(0.5), Some(10), 1.0, SearchMode::Best, false)
         );
-        let full = args(&["m.smi", "CCO", "0.5", "10", "0.9", "first"]);
-        let parsed = parse_args(&full).unwrap();
+        let full = Cli::try_parse_from([
+            "ringo-search",
+            "m.smi",
+            "CCO",
+            "--validate",
+            "0.5",
+            "10",
+            "0.9",
+            "first",
+        ])
+        .unwrap();
         assert_eq!(
-            (parsed.max_similarity, parsed.mode),
-            (0.9, SearchMode::First)
+            (full.max_similarity, full.mode, full.validate),
+            (0.9, SearchMode::First, true)
         );
-
-        // the panics from issue #20: too few arguments, a bad number, a bad mode
-        assert_eq!(parse_args(&args(&["m.smi"])), None);
-        assert_eq!(parse_args(&args(&["m.smi", "CCO", "high", "10"])), None);
+        assert!(
+            Cli::try_parse_from(["ringo-search", "m.smi", "CCO", "0.5", "10", "--validate"])
+                .unwrap()
+                .validate
+        );
+        let exact = Cli::try_parse_from(["ringo-search", "--exact", "m.smi", "CCO"]).unwrap();
         assert_eq!(
-            parse_args(&args(&["m.smi", "CCO", "0.5", "10", "1.0", "worst"])),
-            None
+            (exact.exact, exact.min_similarity, exact.limit),
+            (true, None, None)
         );
+        for argv in [
+            vec!["ringo-search", "m.smi"],
+            vec!["ringo-search", "m.smi", "CCO", "0.5"],
+            vec!["ringo-search", "m.smi", "CCO", "high", "10"],
+            vec!["ringo-search", "m.smi", "CCO", "0.5", "10", "1.0", "worst"],
+            vec!["ringo-search", "--exact", "m.smi"],
+            vec!["ringo-search", "--exact", "m.smi", "CCO", "0.5", "10"],
+            vec!["ringo-search", "--exact", "--validate", "m.smi", "CCO"],
+        ] {
+            assert!(Cli::try_parse_from(argv).is_err());
+        }
     }
 }

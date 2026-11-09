@@ -145,7 +145,7 @@ mod test {
         let smiles_file = dir.path().join("m.smi");
         std::fs::write(&smiles_file, lines.join("\n") + "\n").unwrap();
         let smiles_file = smiles_file.to_str().unwrap().to_owned();
-        index_file(&smiles_file, 2, 512, DEFAULT_BATCH_LINES).unwrap();
+        index_file(&smiles_file, 2, 512, DEFAULT_BATCH_LINES, false).unwrap();
         smiles_file
     }
 

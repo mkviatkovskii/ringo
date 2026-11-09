@@ -53,23 +53,13 @@ fn implicit_hydrogens(
         1 | 9 | 17 | 35 | 53 => &[1],
         _ => &[],
     };
-    let mut bonds: u8 = 0;
-    let mut aromatic = aromatic;
-    for edge in molecule.graph.edges(node) {
-        let order = match edge.weight().order {
-            BondOrder::Dative => u8::from(edge.weight().donor != Some(node)),
-            BondOrder::Single => 1,
-            BondOrder::Double => 2,
-            BondOrder::Triple => 3,
-            BondOrder::Aromatic => {
-                aromatic = true;
-                1
-            }
-        };
-        bonds = bonds
-            .checked_add(order)
-            .ok_or_else(|| ErrMode::Cut(ContextError::new()))?;
-    }
+    let mut bonds =
+        u8::try_from(molecule.bond_valence(node)).map_err(|_| ErrMode::Cut(ContextError::new()))?;
+    let aromatic = aromatic
+        || molecule
+            .graph
+            .edges(node)
+            .any(|edge| edge.weight().order == BondOrder::Aromatic);
     // an aromatic atom also spends one electron on the ring, and keeps its lowest
     // valence: the s in thiophene has no hydrogen
     if aromatic {
@@ -286,9 +276,9 @@ fn parse_molecule_next(input: &mut &str) -> ModalResult<Molecule> {
         return Err(ErrMode::Cut(ContextError::new()));
     }
 
+    add_bonds(&mut molecule, pending_bonds);
     finish_molecule(
         molecule,
-        pending_bonds,
         organic_nodes,
         chiral_atoms,
         &ligand_order,
@@ -316,21 +306,19 @@ fn parse_tokens(input: &mut &str) -> ModalResult<Vec<Token>> {
 
 fn finish_molecule(
     mut molecule: Molecule,
-    pending_bonds: Vec<PendingBond>,
     organic_nodes: Vec<(NodeIndex, u8, bool)>,
     chiral_atoms: Vec<(NodeIndex, Chirality)>,
     ligand_order: &[Vec<Option<NodeIndex>>],
     has_previous: &[bool],
     directions: &[(NodeIndex, NodeIndex, bool)],
 ) -> ModalResult<Molecule> {
-    add_bonds(&mut molecule, pending_bonds);
-
     for (node, atomic_number, aromatic) in organic_nodes {
         let hs = implicit_hydrogens(&molecule, node, atomic_number, aromatic)?;
         if let Some(atom) = molecule.graph.node_weight_mut(node) {
             atom.implicit_hs = hs;
         }
     }
+    molecule.record_valences();
     // after the hydrogens: perception moves electrons around, not hydrogens
     molecule.perceive_aromaticity();
 
@@ -383,7 +371,7 @@ fn finish_molecule(
             Chirality::OH(_) => 6,
             _ => ligands.len(),
         };
-        // SMILES missing coordination sites occupy the implicit-H position (RDKit convention).
+        // Missing coordination sites occupy the implicit-H position in Ringo's supported extension.
         while ligands.len() < coordination {
             ligands.insert(usize::from(has_previous), Ligand::Vacancy);
         }

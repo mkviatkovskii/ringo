@@ -49,10 +49,12 @@ separate codes for donor and acceptor ends. Equivalent reversed spellings, such 
 
 `Molecule::atom_stereo()`, `Molecule::allene_stereo()` and `Molecule::double_bond_stereo()` expose the
 preserved configurations. Atom configurations refer to recorded SMILES ligand order,
-not CIP R/S labels. SP/TB/OH permutation numbers retain their SMILES meaning; missing
-coordination sites occupy the implicit-hydrogen position, following the RDKit SMILES
-convention. Supported three-neighbour N/P/S/As/Se tetrahedral configurations use a
-virtual lone-pair site in that position, following the Open Babel convention.
+not CIP R/S labels. SP/TB/OH permutation numbers follow
+[OpenSMILES stereochemistry](https://opensmiles.org/opensmiles.html#_stereochemistry).
+Ringo additionally supports missing coordination sites at the implicit-hydrogen
+position, and virtual lone-pair sites at that position for three-neighbour
+N/P/S/As/Se tetrahedral configurations. These are extensions beyond the standard's
+explicit stereo rules.
 
 Square-planar tags preserve the four SMILES-ordered ligand sites and the
 [OpenSMILES U, 4 and Z permutations](https://opensmiles.org/opensmiles.html#_square_planar_centers).
@@ -62,8 +64,7 @@ Repeated ligands and dative bonds are supported: `Cl[Pt@SP1](Cl)(<-[NH3])<-[NH3]
 describes cisplatin, while `Cl[Pt@SP2](Cl)(<-[NH3])<-[NH3]` describes transplatin.
 Bracket hydrogens and missing SP sites use the same insertion position as TB/OH;
 missing sites are `Ligand::Vacancy`, not lone pairs. More than four SP sites is an
-error. See the [RDKit conventions](https://www.rdkit.org/docs/RDKit_Book.html#support-for-non-tetrahedral-atomic-stereochemistry)
-for hydrogen and missing-site examples.
+error.
 
 Allene-like axes contain an even number of consecutive double bonds (three, five,
 seven, ... atoms), with the tag on the middle atom. `AlleneStereo` stores that
@@ -89,11 +90,76 @@ representation, without requiring chemically distinct terminal substituents.
 Absence of a stereo record means unspecified stereochemistry. Invalid, incomplete,
 unsupported or contradictory specifications produce parsing errors. Directional
 specifications that aromaticity normalization cannot preserve are also rejected.
-The reader does not perceive additional stereocentres or validate chemical
-plausibility. Arithmetic and representation limits are checked independently.
+The reader does not perceive additional stereocentres. Optional valence validation
+is described below; arithmetic and representation limits are checked independently.
 
 ECFP and similarity search are stereo-insensitive. Preserving a configuration in
 the molecule model does not yet make opposite configurations score differently.
+
+## Optional molecule validation
+
+Chemical validation is a separate optional step on an already loaded molecule:
+
+```rust
+use ringo::io::smiles::reader::molecule::parse_molecule;
+
+let (_, molecule) = parse_molecule("C(C)(C)(C)(C)C").unwrap();
+assert!(molecule.validate().is_err());
+```
+
+`Molecule::validate()` returns `Result<(), String>`. This first implementation checks
+valence; aromaticity consistency and chemical stereogenicity checks are not yet
+implemented. A successful result only means the implemented checks passed.
+Errors identify the
+zero-based atom index and its excessive valence or unsupported charge state.
+Loading always checks syntax, stereo representation and arithmetic limits for
+implicit-hydrogen calculation, independently of this optional step.
+
+The first implemented check covers upper valence limits for H, B, C, N, O, F, Si, P, S,
+Cl, As, Se, Br and I. Neutral ceilings are 1 for H/F/Cl/Br, 2 for O, 3 for B/N,
+4 for C/Si, 5 for P/As/I and 6 for S/Se. Lower valences are accepted, including
+bracket atoms with incomplete valence; this is not radical perception.
+
+For any known element, a positive charge greater than its atomic number is rejected:
+it would require removing more electrons than the neutral atom has. Isolated
+cations with no bonds or attached hydrogens pass the valence check when their
+charge is within that bound, including `[Si+4]`, `[As+3]` and `[Se+4]`; they do not
+need a same-period valence-table entry. This does not check whether an ion is stable.
+
+Bonded main-group atoms use the ceiling of the isoelectronic element in the same
+periodic-table row when the table supplies one. The table allows one bond for the
+three-electron case, so `[H][B+2]` is supported but `[B+2](F)F` is rejected. The
+common perchlorate spelling `[O-][Cl+3]([O-])([O-])[O-]` is supported. P/As with charge -2 and S/Se
+with charge -1 instead have a ceiling of 5. Unsupported charge/table combinations
+fail validation. Neutral H allows one bond; H+ and H- allow none. Other hydrogen
+charges fail validation. These chemical validation limits are Ringo's documented
+policy; they are distinct from the normal valences used to infer hydrogens in the
+[OpenSMILES organic-subset rules](https://opensmiles.org/opensmiles.html#_organic_subset).
+For example, Ringo's optional validation rejects neutral nitrogen above valence
+three, although the notation's implicit-hydrogen rules include valence five.
+Halide anions F-/Cl-/Br-/I- all have a ceiling of zero; polyhalides such as
+`Br[Br-]Br` and `I[I-]I` load permissively but fail this bounded covalent-valence policy.
+
+Loading records valence counts before aromaticity normalization replaces written
+bond orders, so post-load validation can still detect an over-valent input atom.
+Dative bonds contribute zero at the donor and one at the acceptor.
+Aromatic bonds contribute one each, plus one per atom needing a ring pi bond;
+lone-pair donors, empty p orbitals and atoms with a written double/triple bond do
+not receive that extra contribution. This admits pyridine, pyrrole, pyrrolide,
+fused aromatic carbon and supported exocyclic carbonyls without counting every
+aromatic bond as a double bond.
+
+This is aromatic-aware valence bookkeeping, not aromaticity validation. The
+[OpenSMILES aromaticity rules](https://opensmiles.org/opensmiles.html#_aromaticity)
+also require a consistent electron assignment for the marked aromatic system,
+accounting for hydrogens, external bonds and charges. Those system-wide checks
+remain a separate step in #44.
+
+Elements outside this list, including transition metals and wildcard atoms, have
+no chemical valence limit in this policy. Aromatic kekulizability, isotope
+stability, ligand distinctness, stereogenicity and general chemical feasibility
+are not validated. Neutral hypervalent nitrogen is rejected rather than rewritten
+into a charged representation.
 
 ## Known gaps
 
@@ -106,6 +172,6 @@ the molecule model does not yet make opposite configurations score differently.
 
 [Issue #8](https://github.com/mkviatkovskii/ringo/issues/8) records corpus coverage
 and remaining cases. Further core syntax/stereo work is tracked in
-[#51](https://github.com/mkviatkovskii/ringo/issues/51), enhanced stereo/CXSMILES in
-[#52](https://github.com/mkviatkovskii/ringo/issues/52), and optional chemical
-validation in [#44](https://github.com/mkviatkovskii/ringo/issues/44).
+[#51](https://github.com/mkviatkovskii/ringo/issues/51) (completed), enhanced stereo/CXSMILES in
+[#52](https://github.com/mkviatkovskii/ringo/issues/52), and the initial optional
+valence policy in [#44](https://github.com/mkviatkovskii/ringo/issues/44).

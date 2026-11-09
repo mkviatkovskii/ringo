@@ -6,3 +6,4 @@ pub mod exact_match;
 pub mod fingerprint;
 pub mod molecule;
 pub mod stereo;
+mod validation;

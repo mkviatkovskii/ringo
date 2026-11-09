@@ -34,11 +34,15 @@ POSIX shell:
 RINGO_SMILES_CORPUS=/path/to/smiles cargo +stable test --release --locked --test stereo corpus_coverage -- --ignored --nocapture
 ```
 
-The survey reports accepted/rejected counts for plain and stereo-marked records,
-plus rejection examples. It checks that file size and modification time remain
+The survey loads every record once and reports accepted/rejected counts for plain
+and stereo-marked records, plus the count and examples of loaded molecules that
+fail optional post-load validation. It checks that file size and modification time remain
 unchanged during each scan. A passing survey is not a claim of complete parser
 coverage or chemical validity. The checksum-pinned baseline and complete rejection
 classification are recorded in [issue #8](https://github.com/mkviatkovskii/ringo/issues/8).
+
+A valence failure can reflect an unsupported
+representation, such as covalent metal coordination or neutral hypervalent nitrogen.
 
 ## Index compatibility during development
 
