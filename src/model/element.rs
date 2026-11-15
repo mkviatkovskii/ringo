@@ -1,4 +1,4 @@
-#[derive(Hash, Eq, PartialEq, Debug)]
+#[derive(Clone, Hash, Eq, PartialEq, Debug)]
 pub struct Element {
     pub atomic_number: u8,
 }

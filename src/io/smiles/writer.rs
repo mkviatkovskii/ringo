@@ -47,17 +47,10 @@ pub(crate) fn write(
         ranks.len() >= molecule.graph.node_bound(),
         "a rank for every atom"
     );
-    let changed = |node: NodeIndex| {
-        molecule
-            .input_valences
-            .get(node.index())
-            .is_some_and(|&valence| valence != molecule.written_valence(node))
-    };
-    if molecule
-        .graph
-        .node_indices()
-        .any(|node| molecule.graph[node].aromatic && changed(node))
-    {
+    if molecule.graph.node_indices().any(|node| {
+        molecule.graph[node].aromatic
+            && molecule.notation_valence(node, true) != molecule.notation_valence(node, false)
+    }) {
         return Err(WriteError::AromaticValence);
     }
     let writer = Writer::new(molecule, ranks)?;

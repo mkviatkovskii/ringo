@@ -86,7 +86,7 @@ fn same_graph(a: &Molecule, b: &Molecule, map: &Mapping) -> Result<(), String> {
             atom.charge,
             atom.hs + atom.implicit_hs,
             atom.aromatic,
-            molecule.input_valences[node.index()],
+            molecule.notation_valence(node, true),
         )
     };
     for node in a.graph.node_indices() {
@@ -518,4 +518,11 @@ fn aromatic_valence_that_notation_cannot_give_back_is_an_error() {
         .err(),
         Some(WriteError::AromaticValence)
     );
+}
+
+#[test]
+fn aromatic_cycle_survives_a_fused_shortcut() {
+    let molecule = parse("Cc1cc2c(C(C)C)c(c1O)O2");
+    let ranks = [6, 10, 4, 11, 0, 9, 3, 2, 1, 5, 8, 7];
+    check(&molecule, &ranks).unwrap();
 }

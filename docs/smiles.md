@@ -20,9 +20,32 @@ so the 4-ring of biphenylene, `c1ccc2c(c1)-c1ccccc1-2`, is not aromatic although
 its atoms are. Hydrogens are counted before normalization. The molecule graph is exposed read-only
 so external edits cannot leave computed hydrogen or stereo metadata stale.
 
+## Aromaticity perception
+
+Loading keeps the written aromatic flags and bond orders for optional validation,
+then normalizes them. A ring written entirely with aromatic bonds stays aromatic,
+including anti-aromatic rings such as `c1ccc1`. A Kekulé ring becomes
+aromatic when its atoms hold 4n+2 π electrons by the
+[OpenSMILES electron counts](https://opensmiles.org/opensmiles.html#_aromaticity),
+either alone or as a fused pair such as azulene. An aromatic bond outside every
+aromatic ring becomes single.
+
+A neutral O or S between two single bonds gives no π electrons when the smallest
+ring through it has nine or more atoms: in a macrocycle it is a bridge, not a donor
+as in furan. RDKit adopted the same rule in 2026.09
+([rdkit/rdkit#9398](https://github.com/rdkit/rdkit/issues/9398)). For example, the
+10-atom lactone ring of CHEMBL2004566,
+`O=C1Nc2ccccc2C(=O)O/C(Cc2ccccc2)=N\c2ccccc21`, is not aromatic. It keeps its C=N
+double bond and that bond's configuration. Its three benzene rings are aromatic.
+The rule depends on constitution, not on stereo marks, so the stereo-free spelling
+gives the same atoms, bonds and fingerprint. Smaller rings such as furan and 2-pyrone, and nitrogen donors in
+macrocycles such as azonine, are unaffected.
+
 Reader compatibility change in #69: lowercase atoms alone no longer force every
 connecting ring bond aromatic. Explicit single bonds in biphenylene remain single;
 a regression test checks the two single links and twelve aromatic ring bonds.
+A cycle written entirely with aromatic bonds can survive even if a shorter path
+through a fused ring hides it from ring perception.
 Ring perception considers a shortest ring from both ends of each cyclic bond,
 reuses BFS buffers, and excludes acyclic and dative bonds during traversal. This
 keeps the candidate count bounded by twice the bond count rather than enumerating
@@ -119,11 +142,11 @@ let (_, molecule) = parse_molecule("C(C)(C)(C)(C)C").unwrap();
 assert!(molecule.validate().is_err());
 ```
 
-`Molecule::validate()` returns `Result<(), String>`. This first implementation checks
-valence; aromaticity consistency and chemical stereogenicity checks are not yet
+`Molecule::validate()` returns `Result<(), String>`. It checks valence, then the
+written aromatic annotations; chemical stereogenicity checks are not yet
 implemented. A successful result only means the implemented checks passed.
-Errors identify the
-zero-based atom index and its excessive valence or unsupported charge state.
+Errors identify the zero-based atom index and its excessive valence, unsupported
+charge state or aromatic inconsistency.
 Loading always checks syntax, stereo representation and arithmetic limits for
 implicit-hydrogen calculation, independently of this optional step.
 
@@ -152,26 +175,52 @@ three, although the notation's implicit-hydrogen rules include valence five.
 Halide anions F-/Cl-/Br-/I- all have a ceiling of zero; polyhalides such as
 `Br[Br-]Br` and `I[I-]I` load permissively but fail this bounded covalent-valence policy.
 
-Loading records valence counts before aromaticity normalization replaces written
-bond orders, so post-load validation can still detect an over-valent input atom.
-Dative bonds contribute zero at the donor and one at the acceptor.
-Aromatic bonds contribute one each, plus one per atom needing a ring pi bond;
-lone-pair donors, empty p orbitals and atoms with a written double/triple bond do
-not receive that extra contribution. This admits pyridine, pyrrole, pyrrolide,
-fused aromatic carbon and supported exocyclic carbonyls without counting every
-aromatic bond as a double bond.
+Loading keeps the written bond orders and aromatic flags before aromaticity
+normalization replaces them, so post-load validation can still detect an over-valent
+input atom. Dative bonds contribute zero at the donor and one at the acceptor.
+Aromatic bonds contribute one each, plus one per aromatic atom needing a ring pi
+bond (see below). This admits pyridine, pyrrole, pyrrolide, fused aromatic carbon and
+supported exocyclic carbonyls without counting every aromatic bond as a double bond.
 
-This is aromatic-aware valence bookkeeping, not aromaticity validation. The
-[OpenSMILES aromaticity rules](https://opensmiles.org/opensmiles.html#_aromaticity)
-also require a consistent electron assignment for the marked aromatic system,
-accounting for hydrogens, external bonds and charges. Those system-wide checks
-remain a separate step in #44.
+### Aromatic annotations
 
-Elements outside this list, including transition metals and wildcard atoms, have
-no chemical valence limit in this policy. Aromatic kekulizability, isotope
-stability, ligand distinctness, stereogenicity and general chemical feasibility
-are not validated. Neutral hypervalent nitrogen is rejected rather than rewritten
-into a charged representation.
+The [OpenSMILES aromaticity rules](https://opensmiles.org/opensmiles.html#_aromaticity)
+require that electrons can be assigned to the atoms written aromatic, consistent with
+their hydrogens, external bonds and charges. Validation checks the annotations as
+written, before normalization. An aromatic atom is one written in lowercase or with a
+`:` bond. Validation fails when:
+
+- an aromatic atom is in no ring, as in `CccccC`;
+- a wildcard `*` is in the written aromatic system, which Ringo does not support:
+  joined to an aromatic atom by a `:` bond, or on a ring whose other atoms are all
+  aromatic, as in `c1cc*cc1`. A wildcard in a fused non-aromatic ring, as in
+  `c1ccc2c(c1)C*2`, is allowed;
+- the aromatic atoms needing a ring double bond cannot pair up along aromatic ring
+  bonds, so there is no Kekulé structure. Examples are `c1cccc1`, pyrrole written
+  `c1ccnc1` without its NH, and `C=c1ccccc1`.
+
+An aromatic atom needs a ring double bond unless it has a written double or triple
+bond (2-pyridone's C=O carbon), or gives a lone pair or an empty p orbital. Neutral
+O/S/Se/Te and N- give a lone pair. Neutral B/N/P/As, charged carbon and S+/Se+/Te+
+with three neighbours or hydrogens give a lone pair or an empty p orbital: pyrrole's
+NH, indolizine's bridgehead N, borole's B, `[cH-]`, `[cH+]`, and the S+ of
+`C[s+]1cccc1` or of CHEMBL8982's `n[s+]([O-])n`. With two neighbours they need a
+double bond, like pyridine's N, borabenzene's B or thiopyrylium's S+. Other charged
+N/O atoms, such as pyridinium and pyrylium, need one.
+
+An aromatic bond outside rings, such as the link in `c1ccccc1c1ccccc1`, is single,
+as loading reads it. It cannot supply a ring double bond, so `c1cccc1c1cccc1` fails.
+Hückel's rule is not required of written aromatic rings: OpenSMILES also writes
+anti-aromatic rings such as `c1ccc1` in lowercase. Kekulé input has no aromatic
+annotations to check, even where perception later makes its rings aromatic.
+Radicals are not perceived: an atom with too few written hydrogens can still pass if
+a Kekulé structure exists.
+
+Elements outside the valence list, including transition metals and wildcard atoms,
+have no chemical valence limit in this policy. Isotope stability, ligand
+distinctness, stereogenicity and general chemical feasibility are not validated.
+Neutral hypervalent nitrogen is rejected rather than rewritten into a charged
+representation.
 
 ## Writing SMILES
 
@@ -204,7 +253,9 @@ generators prune equivalent branches only when they preserve the current partiti
 No platform-dependent hashes are used. Canonicalization consistently rejects all
 SP/TB/OH centres before searching; the plain writer can still preserve their
 original ligand order. A failed writer ordering is skipped while searching other
-orderings; exhausting the search budget still returns an error.
+orderings; exhausting the search budget still returns an error. Disconnected
+components are ranked separately and their spellings sorted, with one search
+budget shared by the full record.
 
 `ringo-canonical <smiles_file>` writes one output line per input line; use `-`
 for stdin. Record names are retained after a tab. Blank records produce blank lines.
@@ -225,12 +276,12 @@ exact-matcher oracle and throughput acceptance runs remain outstanding.
 - Enhanced stereo and CXSMILES interpretation. Whitespace-separated extension
   blocks are currently treated as trailing record text, not chemical metadata.
 - Tilde (`~`) bonds and extended ring labels such as `%(100)`.
-- Some directional/aromatic ring cases; the current parser rejects these rather
-  than discarding their stereo annotations.
+- Some directional/aromatic ring cases, such as the expanded porphyrin CHEBI:47035;
+  the current parser rejects these rather than discarding their stereo annotations.
 - CIP assignment and complete stereo normalization in canonical SMILES.
 
 [Issue #8](https://github.com/mkviatkovskii/ringo/issues/8) records corpus coverage
 and remaining cases. Further core syntax/stereo work is tracked in
 [#51](https://github.com/mkviatkovskii/ringo/issues/51) (completed), enhanced stereo/CXSMILES in
-[#52](https://github.com/mkviatkovskii/ringo/issues/52), and the initial optional
-valence policy in [#44](https://github.com/mkviatkovskii/ringo/issues/44).
+[#52](https://github.com/mkviatkovskii/ringo/issues/52), and optional
+validation in [#44](https://github.com/mkviatkovskii/ringo/issues/44).

@@ -3,10 +3,12 @@
 //! This is the graph-ranking stage of #63. Stereo marks are preserved by the writer;
 //! perception of impossible stereo and stereo-aware partition refinement are pending.
 use super::writer::{write, WriteError};
+use crate::model::bond::Bond;
 use crate::model::molecule::Molecule;
-use crate::model::stereo::Configuration;
+use crate::model::stereo::{Configuration, Ligand};
+use petgraph::algo::kosaraju_scc;
 use petgraph::stable_graph::NodeIndex;
-use petgraph::visit::{EdgeRef, NodeIndexable};
+use petgraph::visit::{EdgeIndexable, EdgeRef, IntoEdgeReferences, NodeIndexable};
 use std::collections::BTreeMap;
 
 /// Maximum search nodes used by the default canonicalizer.
@@ -40,6 +42,88 @@ pub fn canonical_smiles_with_limit(
     {
         return Err(CanonicalError::Write(WriteError::UnsupportedStereo));
     }
+    let mut remaining = limit;
+    let groups = kosaraju_scc(&molecule.graph);
+    if groups.len() <= 1 {
+        return canonical_component(molecule, &mut remaining);
+    }
+
+    let mut output = components(molecule, &groups)
+        .iter()
+        .map(|component| canonical_component(component, &mut remaining))
+        .collect::<Result<Vec<_>, _>>()?;
+    output.sort_unstable();
+    Ok(output.join("."))
+}
+
+fn components(molecule: &Molecule, groups: &[Vec<NodeIndex>]) -> Vec<Molecule> {
+    let mut parts: Vec<_> = groups.iter().map(|_| Molecule::new()).collect();
+    let mut nodes = vec![(0, NodeIndex::end()); molecule.graph.node_bound()];
+    let mut edges = vec![None; molecule.graph.edge_bound()];
+
+    for (group, members) in groups.iter().enumerate() {
+        let part = &mut parts[group];
+        for &old in members {
+            nodes[old.index()] = (group, part.add_atom(molecule.graph[old].clone()));
+            part.input_aromatic
+                .push(molecule.input_aromatic[old.index()]);
+        }
+    }
+    let node = |old: NodeIndex| nodes[old.index()].1;
+    let ligand = |old: Ligand| match old {
+        Ligand::Atom(atom) => Ligand::Atom(node(atom)),
+        other => other,
+    };
+    for edge in molecule.graph.edge_references() {
+        let a = edge.source();
+        let b = edge.target();
+        let part = &mut parts[nodes[a.index()].0];
+        let bond = edge.weight();
+        edges[edge.id().index()] = Some(part.add_bond(
+            node(a),
+            node(b),
+            Bond {
+                order: bond.order,
+                donor: bond.donor.map(node),
+            },
+        ));
+        part.input_orders
+            .push(molecule.input_orders[edge.id().index()]);
+    }
+    for stereo in &molecule.stereo {
+        let part = &mut parts[nodes[stereo.center.index()].0];
+        let mut stereo = stereo.clone();
+        stereo.center = node(stereo.center);
+        stereo
+            .ligands
+            .iter_mut()
+            .for_each(|site| *site = ligand(*site));
+        part.stereo.push(stereo);
+    }
+    for stereo in &molecule.allene_stereo {
+        let part = &mut parts[nodes[stereo.center.index()].0];
+        let mut stereo = stereo.clone();
+        stereo.center = node(stereo.center);
+        stereo.axis.iter_mut().for_each(|atom| *atom = node(*atom));
+        stereo.ligands = stereo.ligands.map(ligand);
+        part.allene_stereo.push(stereo);
+    }
+    for stereo in &molecule.bond_stereo {
+        let part = &mut parts[nodes[stereo.ends[0].index()].0];
+        let mut stereo = stereo.clone();
+        stereo.bond = edges[stereo.bond.index()]
+            .unwrap_or_else(|| unreachable!("every bond belongs to a component"));
+        stereo.ends = stereo.ends.map(node);
+        stereo.references = stereo.references.map(node);
+        part.bond_stereo.push(stereo);
+    }
+    parts
+}
+
+fn canonical_component(
+    molecule: &Molecule,
+    remaining: &mut usize,
+) -> Result<String, CanonicalError> {
     let nodes: Vec<_> = molecule.graph.node_indices().collect();
     let keys: Vec<_> = nodes
         .iter()
@@ -66,11 +150,13 @@ pub fn canonical_smiles_with_limit(
     let mut search = Search {
         molecule,
         nodes,
-        remaining: limit,
+        remaining: *remaining,
         leaves: BTreeMap::new(),
         symmetries: Vec::new(),
     };
-    search.visit(colors)
+    let result = search.visit(colors);
+    *remaining = search.remaining;
+    result
 }
 
 fn compress<K: Ord>(nodes: &[NodeIndex], keys: &[K], bound: usize) -> Vec<usize> {
@@ -241,6 +327,10 @@ mod tests {
             vec!["CC(C)O", "OC(C)C", "C(C)(O)C"],
             vec!["N->[Cu]", "[Cu]<-N"],
             vec!["CC.O", "O.CC"],
+            vec![
+                "[Cu]<-N.F/C=C/F.FC=[C@]=CCl.N[C@H](F)C",
+                "N[C@H](F)C.FC=[C@]=CCl.F/C=C/F.N->[Cu]",
+            ],
             vec!["C1CC2CCC1C2", "C1C2CCC(C1)C2"],
         ] {
             let expected = canonical(group[0]);
@@ -342,10 +432,12 @@ mod tests {
 
     #[test]
     fn search_budget_is_an_error() {
-        let molecule = parse_molecule("C1CCCCC1").unwrap().1;
-        assert_eq!(
-            canonical_smiles_with_limit(&molecule, 1),
-            Err(CanonicalError::SearchLimit)
-        );
+        for input in ["C1CCCCC1", "O.O"] {
+            let molecule = parse_molecule(input).unwrap().1;
+            assert_eq!(
+                canonical_smiles_with_limit(&molecule, 1),
+                Err(CanonicalError::SearchLimit)
+            );
+        }
     }
 }

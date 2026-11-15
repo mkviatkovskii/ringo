@@ -55,3 +55,15 @@ fn exhausted_budget_fails_without_a_provisional_result() {
         .unwrap()
         .contains("SearchLimit"));
 }
+
+#[test]
+fn repeated_disconnected_fragments_do_not_block_the_next_record() {
+    let fragments = "O.".repeat(19_999) + "O";
+    let output = run(&format!("{fragments}\nCCO after\n"), &[]);
+    assert!(output.status.success());
+    let text = String::from_utf8(output.stdout).unwrap();
+    let mut lines = text.lines();
+    assert_eq!(lines.next(), Some(fragments.as_str()));
+    assert!(lines.next().is_some_and(|line| line.ends_with("\tafter")));
+    assert_eq!(lines.next(), None);
+}

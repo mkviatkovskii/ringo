@@ -4,7 +4,28 @@ use fixedbitset::FixedBitSet;
 use petgraph::algo::bridges;
 use petgraph::stable_graph::{EdgeIndex, NodeIndex};
 use petgraph::visit::{EdgeFiltered, EdgeIndexable, EdgeRef, IntoEdgeReferences, NodeIndexable};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
+
+/// What Hückel counting needs to know about the rings an atom is in.
+struct RingContext {
+    /// Covalent bonds in any ring, by edge index.
+    bonds: FixedBitSet,
+    /// Size of the smallest ring through each ring atom.
+    smallest: HashMap<NodeIndex, usize>,
+}
+
+impl RingContext {
+    fn new(rings: &[Vec<NodeIndex>], bonds: FixedBitSet) -> RingContext {
+        let mut smallest: HashMap<NodeIndex, usize> = HashMap::new();
+        for ring in rings {
+            for &node in ring {
+                let size = smallest.entry(node).or_insert(ring.len());
+                *size = (*size).min(ring.len());
+            }
+        }
+        RingContext { bonds, smallest }
+    }
+}
 
 impl Molecule {
     /// Marks every ring that obeys Hückel's rule (4n+2 π electrons) as aromatic: its
@@ -15,11 +36,12 @@ impl Molecule {
     pub fn perceive_aromaticity(&mut self) {
         let ring_bonds = self.covalent_ring_bonds();
         let rings = self.rings(&ring_bonds);
+        let context = RingContext::new(&rings, ring_bonds);
 
         // aromatic by itself, so all its bonds are aromatic
         let mut alone: Vec<bool> = rings
             .iter()
-            .map(|ring| self.huckel(ring.iter().copied(), &ring_bonds))
+            .map(|ring| self.huckel(ring.iter().copied(), &context))
             .collect();
         let mut aromatic = alone.clone();
         // fused pairs such as azulene (5 + 7 atoms) are aromatic only around the
@@ -27,6 +49,9 @@ impl Molecule {
         let mut pairs = Vec::new();
         for i in 0..rings.len() {
             for j in i + 1..rings.len() {
+                if alone[i] || alone[j] {
+                    continue;
+                }
                 let shared: Vec<NodeIndex> = rings[i]
                     .iter()
                     .filter(|node| rings[j].contains(node))
@@ -48,7 +73,7 @@ impl Molecule {
                 continue;
             }
             let union: HashSet<NodeIndex> = rings[i].iter().chain(&rings[j]).copied().collect();
-            if self.huckel(union.into_iter(), &ring_bonds) {
+            if self.huckel(union.into_iter(), &context) {
                 aromatic[i] = true;
                 aromatic[j] = true;
                 shared_bonds.insert(edge);
@@ -67,10 +92,30 @@ impl Molecule {
                 self.ring_edges(ring)
                     .filter(|edge| alone[i] || !shared_bonds.contains(edge)),
             );
-            for &node in ring {
-                if let Some(atom) = self.graph.node_weight_mut(node) {
-                    atom.aromatic = true;
-                }
+        }
+        // A shorter path through a fused ring can hide a fully written aromatic cycle.
+        let missed = |edge: &EdgeIndex| {
+            context.bonds.contains(edge.index())
+                && self.graph[*edge].order == BondOrder::Aromatic
+                && !aromatic_bonds.contains(edge)
+                && !shared_bonds.contains(edge)
+        };
+        let missed: Vec<_> = self.graph.edge_indices().filter(missed).collect();
+        if !missed.is_empty() {
+            let written = EdgeFiltered::from_fn(&self.graph, |edge| {
+                edge.weight().order == BondOrder::Aromatic
+            });
+            let written_bridges: HashSet<_> = bridges(&written).map(|edge| edge.id()).collect();
+            aromatic_bonds.extend(
+                missed
+                    .into_iter()
+                    .filter(|edge| !written_bridges.contains(edge)),
+            );
+        }
+        for &edge in &aromatic_bonds {
+            if let Some((a, b)) = self.graph.edge_endpoints(edge) {
+                self.graph[a].aromatic = true;
+                self.graph[b].aromatic = true;
             }
         }
         for edge in self.graph.edge_indices().collect::<Vec<_>>() {
@@ -94,10 +139,10 @@ impl Molecule {
     }
 
     /// Whether these atoms hold 4n+2 π electrons, each of them giving some.
-    fn huckel(&self, atoms: impl Iterator<Item = NodeIndex>, ring_bonds: &FixedBitSet) -> bool {
+    fn huckel(&self, atoms: impl Iterator<Item = NodeIndex>, context: &RingContext) -> bool {
         let mut electrons = 0;
         for node in atoms {
-            match self.pi_electrons(node, ring_bonds) {
+            match self.pi_electrons(node, context) {
                 Some(count) => electrons += count,
                 None => return false,
             }
@@ -107,13 +152,13 @@ impl Molecule {
 
     /// π electrons an atom gives to an aromatic ring, or None when it cannot be in one
     /// (an sp3 carbon such as the CH2 of cyclopentadiene).
-    fn pi_electrons(&self, node: NodeIndex, ring_bonds: &FixedBitSet) -> Option<u32> {
+    fn pi_electrons(&self, node: NodeIndex, context: &RingContext) -> Option<u32> {
         let atom = &self.graph[node];
         let mut ring_double = false;
         let mut ring_aromatic = false;
         let mut exocyclic_double = None;
         for edge in self.graph.edges(node) {
-            let in_ring = ring_bonds.contains(edge.id().index());
+            let in_ring = context.bonds.contains(edge.id().index());
             match edge.weight().order {
                 BondOrder::Triple => return None,
                 BondOrder::Double if in_ring => ring_double = true,
@@ -150,6 +195,10 @@ impl Molecule {
         match (atom.element.atomic_number, atom.charge) {
             // a lone pair: pyrrole's N, furan's O, thiophene's S
             (7 | 15, 0) if neighbours == 3 => Some(2),
+            // but a neutral O or S between two single bonds only bridges a macrocycle
+            // (9 or more atoms, as in RDKit since 2026.09, rdkit/rdkit#9398): the
+            // lactone ring of CHEMBL2004566 keeps its C=N double bond
+            (8 | 16, 0) if neighbours == 2 && context.smallest.get(&node) >= Some(&9) => None,
             (7, -1) | (8 | 16 | 34 | 52, 0) if neighbours == 2 => Some(2),
             // the cyclopentadienyl anion, and an empty p orbital: tropylium, boron
             (6, -1) => Some(2),
@@ -219,6 +268,21 @@ impl Molecule {
             }
         }
         rings
+    }
+
+    /// The shortest ring of covalent bonds through a bond, as its atoms; `ring_bonds`
+    /// comes from `covalent_ring_bonds`.
+    pub(crate) fn ring_through(
+        &self,
+        edge: EdgeIndex,
+        ring_bonds: &FixedBitSet,
+    ) -> Option<Vec<NodeIndex>> {
+        let (a, b) = self.graph.edge_endpoints(edge)?;
+        if !ring_bonds.contains(edge.index()) {
+            return None;
+        }
+        let mut parent = vec![None; self.graph.node_bound()];
+        self.shortest_path_without(a, b, edge, ring_bonds, &mut parent, &mut Vec::new())
     }
 
     /// Breadth-first search from `from` to `to` that may not use `skip`; the path
@@ -380,6 +444,28 @@ mod tests {
             "C=C1C=CC=C1",
         ] {
             assert!(aromatic_atoms(smiles).iter().all(|&a| !a), "{smiles}");
+        }
+    }
+
+    #[test]
+    fn test_macrocycle_oxygen_and_sulfur_bridges_give_no_electrons() {
+        // oxonin and thionin: 10 by a naive count, but the O or S only bridges a 9-ring
+        for smiles in [
+            "C1=CC=CC=COC=C1",
+            "C1=CC=CC=CSC=C1",
+            "O=C1NC=CC(=O)OC(C)=NC=C1",
+        ] {
+            assert!(aromatic_atoms(smiles).iter().all(|&a| !a), "{smiles}");
+        }
+        // furan, 2-pyrone and azonine keep their donors; written aromatic stays aromatic
+        for (smiles, ring) in [
+            ("C1=COC=C1", 5),
+            ("O=C1OC=CC=C1", 6),
+            ("C1=CC=CC=C[NH]C=C1", 9),
+            ("c1ccccoccc1", 9),
+        ] {
+            let count = aromatic_atoms(smiles).iter().filter(|&&a| a).count();
+            assert_eq!(count, ring, "{smiles}");
         }
     }
 

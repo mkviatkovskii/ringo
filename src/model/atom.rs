@@ -1,6 +1,6 @@
 use crate::model::element::Element;
 
-#[derive(Hash, Eq, PartialEq, Debug)]
+#[derive(Clone, Hash, Eq, PartialEq, Debug)]
 pub struct Atom {
     pub element: Element,
     pub isotope: u16,
