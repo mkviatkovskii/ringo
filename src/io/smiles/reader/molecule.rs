@@ -3,7 +3,7 @@ use crate::io::smiles::reader::bond::{parse_bond, ParsedBond};
 use crate::model::atom::Atom;
 use crate::model::bond::BondOrder;
 use crate::model::molecule::Molecule;
-use crate::model::stereo::{AtomStereo, Configuration, Ligand};
+use crate::model::stereo::{AtomStereo, Configuration, DoubleBondStereo, Ligand};
 use petgraph::stable_graph::NodeIndex;
 use petgraph::visit::IntoEdgeReferences;
 use std::collections::HashMap;
@@ -38,7 +38,7 @@ fn parse_cycle_digit(input: &mut &str) -> ModalResult<u8> {
 
 /// Hydrogens an atom outside brackets gets: the lowest normal valence that
 /// fits its bonds, minus the bonds (`OpenSMILES` organic subset rules).
-fn implicit_hydrogens(
+pub(crate) fn implicit_hydrogens(
     molecule: &Molecule,
     node: NodeIndex,
     atomic_number: u8,
@@ -391,27 +391,30 @@ fn finish_molecule(
             configuration,
         });
     }
-    resolve_directions(&mut molecule, directions)?;
+    molecule.bond_stereo = double_bond_stereo(&molecule, directions)
+        .ok_or_else(|| ErrMode::Cut(ContextError::new()))?;
     Ok(molecule)
 }
 
-fn resolve_directions(
-    molecule: &mut Molecule,
+/// The double-bond configurations that `/` and `\` bonds give, each written `(first atom,
+/// second atom, is '/')`. None if a direction is on a bond that can't take one, is used by no
+/// configuration, or contradicts another.
+pub(crate) fn double_bond_stereo(
+    molecule: &Molecule,
     directions: &[(NodeIndex, NodeIndex, bool)],
-) -> ModalResult<()> {
-    use crate::model::stereo::DoubleBondStereo;
+) -> Option<Vec<DoubleBondStereo>> {
     use petgraph::visit::EdgeRef;
+    let mut stereo = Vec::new();
     if directions.is_empty() {
-        return Ok(());
+        return Some(stereo);
     }
-    let error = || ErrMode::Cut(ContextError::new());
     let mut used = vec![false; directions.len()];
     for &(a, b, _) in directions {
         if molecule
             .get_bond_by_atoms(a, b)
             .is_none_or(|bond| !matches!(bond.order, BondOrder::Single | BondOrder::Aromatic))
         {
-            return Err(error());
+            return None;
         }
     }
     for edge in molecule.graph.edge_references() {
@@ -432,10 +435,10 @@ fn resolve_directions(
         if let (Some(a), Some(b)) = (sides[0].first(), sides[1].first()) {
             for side in &sides {
                 if side.len() > 2 || (side.len() == 2 && side[0].1 == side[1].1) {
-                    return Err(error());
+                    return None;
                 }
             }
-            molecule.bond_stereo.push(DoubleBondStereo {
+            stereo.push(DoubleBondStereo {
                 bond: edge.id(),
                 ends,
                 references: [a.0, b.0],
@@ -447,9 +450,9 @@ fn resolve_directions(
         }
     }
     if used.contains(&false) {
-        return Err(error());
+        return None;
     }
-    Ok(())
+    Some(stereo)
 }
 
 #[cfg(test)]

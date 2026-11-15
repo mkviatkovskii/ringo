@@ -27,7 +27,7 @@ impl Molecule {
                     self.describe(node)
                 ));
             }
-            let valence = self.written_valence(node) + u32::from(self.needs_ring_pi(node));
+            let valence = self.notation_valence(node, true);
             // An isolated cation has no bonding valence to limit, even across closed shells.
             if atom.charge > 0 && valence == 0 && self.graph.edges(node).next().is_none() {
                 continue;
@@ -94,7 +94,10 @@ impl Molecule {
         // a perfect matching of the atoms that need a ring π bond is a Kekulé structure
         let mut pairing: UnGraph<NodeIndex, ()> = UnGraph::default();
         let mut index = HashMap::new();
-        for &node in aromatic.iter().filter(|&&node| self.needs_ring_pi(node)) {
+        for &node in aromatic
+            .iter()
+            .filter(|&&node| self.valence_parts(node, true).1)
+        {
             index.insert(node, pairing.add_node(node));
         }
         for edge in (&self.graph).edge_references() {
@@ -169,17 +172,6 @@ impl Molecule {
         self.input_orders[edge.index()]
     }
 
-    /// Written bonds and hydrogens, an aromatic bond counting one.
-    fn written_valence(&self, node: NodeIndex) -> u32 {
-        let atom = &self.graph[node];
-        self.graph
-            .edges(node)
-            .map(|edge| order_valence(self.written_order(edge.id()), edge.weight().donor, node))
-            .sum::<u32>()
-            + u32::from(atom.hs)
-            + u32::from(atom.implicit_hs)
-    }
-
     /// Written in lowercase, or with an aromatic bond.
     fn aromatic_as_written(&self, node: NodeIndex) -> bool {
         self.input_aromatic[node.index()]
@@ -189,22 +181,34 @@ impl Molecule {
                 .any(|edge| self.written_order(edge.id()) == BondOrder::Aromatic)
     }
 
-    /// Whether an aromatic atom needs one of its aromatic bonds to be double, like
-    /// benzene's carbons and pyridine's nitrogen. Lone-pair donors (pyrrole's NH, furan's O),
-    /// empty p orbitals (boron, tropylium) and atoms with a written double or triple bond
-    /// (2-pyridone's C=O carbon) do not.
-    fn needs_ring_pi(&self, node: NodeIndex) -> bool {
-        if !self.aromatic_as_written(node)
-            || self.graph.edges(node).any(|edge| {
-                matches!(
-                    self.written_order(edge.id()),
-                    BondOrder::Double | BondOrder::Triple
-                )
-            })
-        {
-            return false;
-        }
+    /// Bond valence plus the extra order required by a ring double bond, before or after perception.
+    pub(crate) fn notation_valence(&self, node: NodeIndex, written: bool) -> u32 {
+        let (valence, needs_ring_pi) = self.valence_parts(node, written);
+        valence + u32::from(needs_ring_pi)
+    }
+
+    fn valence_parts(&self, node: NodeIndex, written: bool) -> (u32, bool) {
         let atom = &self.graph[node];
+        let mut valence = u32::from(atom.hs) + u32::from(atom.implicit_hs);
+        let mut aromatic = if written {
+            self.input_aromatic[node.index()]
+        } else {
+            atom.aromatic
+        };
+        let mut has_pi = false;
+        for edge in self.graph.edges(node) {
+            let order = if written {
+                self.written_order(edge.id())
+            } else {
+                edge.weight().order
+            };
+            valence += order_valence(order, edge.weight().donor, node);
+            aromatic |= order == BondOrder::Aromatic;
+            has_pi |= matches!(order, BondOrder::Double | BondOrder::Triple);
+        }
+        if !aromatic || has_pi {
+            return (valence, false);
+        }
         let donor_or_empty = match (atom.element.atomic_number, atom.charge) {
             // a lone pair with two neighbours: furan's O, pyrrolide's N-
             (8 | 16 | 34 | 52, 0) | (7, -1) => true,
@@ -212,12 +216,10 @@ impl Molecule {
             // the S+ of a thiophenium or of CHEMBL8982's [s+]([O-])) or an empty p orbital
             // (borole's B, tropylium's CH+); with two, borabenzene's B and thiopyrylium's
             // S+ need a ring double bond, like pyridine's N
-            (5 | 7 | 15 | 33, 0) | (6, -1 | 1) | (16 | 34 | 52, 1) => {
-                self.written_valence(node) == 3
-            }
+            (5 | 7 | 15 | 33, 0) | (6, -1 | 1) | (16 | 34 | 52, 1) => valence == 3,
             _ => false,
         };
-        !donor_or_empty
+        (valence, !donor_or_empty)
     }
 }
 

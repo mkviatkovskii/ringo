@@ -1,7 +1,3 @@
-#[expect(
-    clippy::unwrap_used,
-    reason = "integration helper requires valid fixtures and successful file operations"
-)]
 pub fn assert_search<'a>(name: &str, records: &str, queries: impl IntoIterator<Item = &'a str>) {
     let path = std::env::temp_dir().join(format!("ringo-{name}-{}.smi", std::process::id()));
     std::fs::write(&path, records).unwrap();

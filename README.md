@@ -89,7 +89,8 @@ key per record, sorted, so a lookup reads only the records with the query's key.
 The reader handles aromatic and Kekulé notation, disconnected components, isotopes,
 atom map/class labels, dative bonds, and supported atom and double-bond stereo tags.
 See [SMILES support](docs/smiles.md) for the exact syntax, model representation and
-unsupported cases.
+unsupported cases. The library also writes SMILES that read back as the same
+molecule, in any atom order; see [Writing SMILES](docs/smiles.md#writing-smiles).
 
 Fingerprints and similarity search are currently **stereo-insensitive**: opposite
 configurations can have identical fingerprints. The reader preserves supported

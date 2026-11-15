@@ -48,3 +48,7 @@ todo = "warn"
 unimplemented = "warn"
 # an allowed lint must say why
 allow_attributes_without_reason = "warn"
+
+[[bin]]
+name = "ringo-canonical"
+path = "src/bin/ringo_canonical.rs"

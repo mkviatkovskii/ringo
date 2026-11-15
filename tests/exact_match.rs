@@ -8,10 +8,6 @@ fn parse(smiles: &str) -> Molecule {
         .1
 }
 
-#[expect(
-    clippy::unwrap_used,
-    reason = "test helper requires stereo the matcher supports"
-)]
 fn same(a: &str, b: &str) -> bool {
     let (a_molecule, b_molecule) = (parse(a), parse(b));
     let forward = a_molecule.exact_match(&b_molecule).unwrap();

@@ -1,4 +1,4 @@
-#[derive(Hash, Eq, PartialEq, Debug)]
+#[derive(Clone, Hash, Eq, PartialEq, Debug)]
 pub struct Element {
     pub atomic_number: u8,
 }
@@ -131,6 +131,11 @@ impl Element {
             0 => 0.0,
             _ => panic!("Unsupported atomic number {}", self.atomic_number),
         }
+    }
+
+    /// The symbol, such as "C" or "Cl"; "*" for the wildcard.
+    pub fn symbol(&self) -> &'static str {
+        SYMBOLS[usize::from(self.atomic_number)]
     }
 
     /// The element for a symbol such as "C" or "Cl"; "*" is the wildcard, atomic number 0.
