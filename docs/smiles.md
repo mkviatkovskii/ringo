@@ -248,7 +248,9 @@ atom classes, aromaticity, bond orders, dative bonds and stereo.
 The graph-ranking stage of [#63](https://github.com/mkviatkovskii/ringo/issues/63)
 is available through `canonical::canonical_smiles(&molecule)`. It sorts atom
 invariants, refines neighbour partitions and searches unresolved ties, retaining
-the smallest written result. Matching leaf outputs reveal automorphisms; their
+the smallest written result. Tetrahedral, allene and double-bond configurations
+can distinguish otherwise identical branches once the ligand ranks resolve their
+parity. Matching leaf outputs reveal automorphisms; their
 generators prune equivalent branches only when they preserve the current partition.
 No platform-dependent hashes are used. Canonicalization consistently rejects all
 SP/TB/OH centres before searching; the plain writer can still preserve their
