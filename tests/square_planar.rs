@@ -3,10 +3,6 @@ pub mod common;
 use ringo::io::smiles::reader::molecule::parse_molecule;
 use ringo::model::stereo::{Configuration, Ligand};
 
-#[expect(
-    clippy::unwrap_used,
-    reason = "test helper requires a parsed square-planar centre and its four ligands"
-)]
 fn opposite_elements(smiles: &str) -> [[u8; 2]; 2] {
     let molecule = parse_molecule(smiles)
         .unwrap_or_else(|_| panic!("{smiles}"))

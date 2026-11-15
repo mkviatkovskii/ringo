@@ -3,10 +3,6 @@ pub mod common;
 use ringo::io::smiles::reader::molecule::parse_molecule;
 use ringo::model::stereo::Ligand;
 
-#[expect(
-    clippy::unwrap_used,
-    reason = "test helper requires a resolved allene axis"
-)]
 fn orientation(smiles: &str) -> u8 {
     let molecule = parse_molecule(smiles)
         .unwrap_or_else(|_| panic!("{smiles}"))

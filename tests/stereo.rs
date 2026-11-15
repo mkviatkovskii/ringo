@@ -50,10 +50,6 @@ fn extended_classes_keep_permutation_and_missing_site() {
     );
 }
 
-#[expect(
-    clippy::unwrap_used,
-    reason = "test helper requires a parsed centre with four valid ligands"
-)]
 fn parity(smiles: &str) -> u8 {
     let molecule = parse_molecule(smiles).unwrap().1;
     let stereo = &molecule.atom_stereo()[0];
