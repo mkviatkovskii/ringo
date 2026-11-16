@@ -150,7 +150,6 @@ mod test {
     use crate::db::exact_search::exact_search;
     use crate::db::index::test::TestDir;
     use crate::db::index::{index_file, DEFAULT_BATCH_LINES};
-    use crate::model::exact_match::ExactMatchError;
 
     fn index(dir: &TestDir, lines: &[&str]) -> String {
         let smiles_file = dir.path().join("m.smi");
@@ -199,23 +198,16 @@ mod test {
     }
 
     #[test]
-    fn test_exact_search_reports_lines_it_cannot_compare() {
-        let dir = TestDir::new("test_exact_search_undecided");
+    fn test_exact_search_resolves_symmetric_dendrimers_without_undecided() {
+        let dir = TestDir::new("test_exact_search_symmetric");
         let tree = "C(C(C(CC)CC)C(CC)CC)C(C(CC)CC)C(CC)CC";
         let target = format!("[C@H](F)(Cl)C({tree})({tree})C");
         let query = format!("[C@@H](F)(Cl)C({tree})({tree})C");
         let smiles_file = index(&dir, &[&target, "C[Pt@SP1](F)(Cl)N", "CCO"]);
         let hits = exact_search(&smiles_file, &query).unwrap();
         assert_eq!(hits.lines, Vec::<String>::new());
-        let undecided: Vec<_> = hits
-            .undecided
-            .iter()
-            .map(|(line, error)| (line.trim_end(), *error))
-            .collect();
-        assert_eq!(
-            undecided,
-            [(target.as_str(), ExactMatchError::TooSymmetric)]
-        );
+        assert_eq!(hits.undecided, Vec::new());
+        assert_eq!(found(&smiles_file, &target), [target]);
 
         let sp = exact_search(&smiles_file, "C[Pt@SP2](F)(Cl)N").unwrap();
         assert_eq!(sp.lines, Vec::<String>::new());
