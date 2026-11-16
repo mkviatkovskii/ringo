@@ -6,7 +6,8 @@ SMILES is an error rather than a partially parsed molecule.
 
 ## Atoms, bonds and components
 
-The reader supports all element symbols in brackets, the organic subset outside
+The reader supports all element symbols in brackets (including lowercase `si` for
+aromatic silicon), the organic subset outside
 brackets, aromatic atom notation, isotopes, formal charges, bracket hydrogens,
 implicit hydrogens, single/double/triple/aromatic bonds, branches, ring closures,
 and disconnected components separated by a dot. The wildcard `*` is represented

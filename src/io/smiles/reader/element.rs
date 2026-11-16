@@ -27,7 +27,7 @@ pub fn parse_organic_element(input: &mut &str) -> ModalResult<(u8, bool)> {
 /// `se`, or `*`. Returns the atomic number and whether the atom is aromatic.
 pub fn parse_bracket_element(input: &mut &str) -> ModalResult<(u8, bool)> {
     alt((
-        alt(("se", "as", "te", one_of(AROMATIC_ORGANIC).take()))
+        alt(("se", "as", "te", "si", one_of(AROMATIC_ORGANIC).take()))
             .verify_map(aromatic_number)
             .map(|atomic_number| (atomic_number, true)),
         // two letters first, so "[Sc]" is scandium; inside brackets nothing else
@@ -50,6 +50,7 @@ fn aromatic_number(symbol: &str) -> Option<u8> {
         "c" => Some(6),
         "n" => Some(7),
         "o" => Some(8),
+        "si" => Some(14),
         "p" => Some(15),
         "s" => Some(16),
         "as" => Some(33),
@@ -89,6 +90,11 @@ mod tests {
                 "{input}"
             );
         }
+        // outside brackets "si" is aromatic sulfur followed by "i", not silicon
+        assert_eq!(
+            parse_organic_element.parse_peek("si").unwrap(),
+            ("i", (16, true))
+        );
         // not in the organic subset
         assert!(parse_organic_element
             .parse_peek("Na")
@@ -107,6 +113,8 @@ mod tests {
             ("c", (6, true)),
             ("se", (34, true)),
             ("as", (33, true)),
+            ("te", (52, true)),
+            ("si", (14, true)),
         ] {
             assert_eq!(
                 parse_bracket_element.parse_peek(input).unwrap(),

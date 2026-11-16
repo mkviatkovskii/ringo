@@ -486,6 +486,18 @@ fn round_trips() {
 }
 
 #[test]
+fn aromatic_silicon_round_trips() {
+    for smiles in [
+        "O[si]1ccc2ccccc2c1",
+        "[c]1ccc[siH]c1",
+        "c1cccc[si]#1",
+        r"Cn1c2c(cc(-c3ccccc3)/[si]1=C\c1ccccc1)C1CCC2C1",
+    ] {
+        assert_round_trip(smiles);
+    }
+}
+
+#[test]
 fn every_test_fixture_round_trips() {
     for file in [
         include_str!("../../../../tests/data/stereo.smi"),
