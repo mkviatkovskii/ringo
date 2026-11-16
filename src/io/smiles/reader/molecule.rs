@@ -320,6 +320,10 @@ fn finish_molecule(
     }
     molecule.record_input();
     // after the hydrogens: perception moves electrons around, not hydrogens
+    if !directions.is_empty() && molecule.input_orders.contains(&BondOrder::Aromatic) {
+        // Mixed notation can give a configured bond explicitly. Validate again after perception.
+        molecule.bond_stereo = double_bond_stereo(&molecule, directions).unwrap_or_default();
+    }
     molecule.perceive_aromaticity();
 
     for (node, chirality) in chiral_atoms {

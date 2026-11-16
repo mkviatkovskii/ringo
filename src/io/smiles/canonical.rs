@@ -462,6 +462,26 @@ mod tests {
     }
 
     #[test]
+    fn canonical_round_trips_preserve_the_molecule() {
+        for input in include_str!("../../../tests/data/surechembl_canonical_round_trip.smi").lines()
+        {
+            let molecule = parse_molecule(input)
+                .unwrap_or_else(|e| panic!("{input}: {e:?}"))
+                .1;
+            let output = canonical_smiles(&molecule).unwrap_or_else(|e| panic!("{input}: {e:?}"));
+            let reread = parse_molecule(&output)
+                .unwrap_or_else(|e| panic!("{input} -> {output}: {e:?}"))
+                .1;
+            assert_eq!(
+                molecule.exact_match(&reread),
+                Ok(true),
+                "{input} -> {output}"
+            );
+            assert_eq!(canonical_smiles(&reread), Ok(output), "{input}");
+        }
+    }
+
+    #[test]
     fn canonicalizes_surechembl_double_bond_stereo() {
         let records = include_str!("../../../tests/data/surechembl_double_bond_stereo.smi");
         for record in records.lines() {

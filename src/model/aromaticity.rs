@@ -6,6 +6,15 @@ use petgraph::stable_graph::{EdgeIndex, NodeIndex};
 use petgraph::visit::{EdgeFiltered, EdgeIndexable, EdgeRef, IntoEdgeReferences, NodeIndexable};
 use std::collections::{HashMap, HashSet};
 
+const MAX_SHORTEST_RING_PATHS: u8 = 16;
+
+#[derive(Clone, Copy)]
+struct RingVisit {
+    parent: NodeIndex,
+    distance: usize,
+    paths: u8,
+}
+
 /// What Hückel counting needs to know about the rings an atom is in.
 struct RingContext {
     /// Covalent bonds in any ring, by edge index.
@@ -38,10 +47,19 @@ impl Molecule {
         let rings = self.rings(&ring_bonds);
         let context = RingContext::new(&rings, ring_bonds);
 
-        // aromatic by itself, so all its bonds are aromatic
+        let written: Vec<_> = rings
+            .iter()
+            .map(|ring| self.written_aromatic(ring))
+            .collect();
+        let protected: Vec<_> = rings
+            .iter()
+            .map(|ring| self.protect_configured_double_bond(ring))
+            .collect();
+        // Aromatic by itself, so all its bonds are aromatic.
         let mut alone: Vec<bool> = rings
             .iter()
-            .map(|ring| self.huckel(ring.iter().copied(), &context))
+            .zip(&protected)
+            .map(|(ring, &protected)| !protected && self.huckel(ring.iter().copied(), &context))
             .collect();
         let mut aromatic = alone.clone();
         // fused pairs such as azulene (5 + 7 atoms) are aromatic only around the
@@ -49,7 +67,9 @@ impl Molecule {
         let mut pairs = Vec::new();
         for i in 0..rings.len() {
             for j in i + 1..rings.len() {
-                if alone[i] || alone[j] {
+                // Pairing with a partially written ring would reinterpret the fully written one.
+                if alone[i] || alone[j] || protected[i] || protected[j] || written[i] != written[j]
+                {
                     continue;
                 }
                 let shared: Vec<NodeIndex> = rings[i]
@@ -79,8 +99,8 @@ impl Molecule {
                 shared_bonds.insert(edge);
             }
         }
-        for (i, ring) in rings.iter().enumerate() {
-            if !aromatic[i] && self.written_aromatic(ring) {
+        for (i, &written) in written.iter().enumerate() {
+            if !aromatic[i] && written {
                 aromatic[i] = true;
                 alone[i] = true;
             }
@@ -136,6 +156,18 @@ impl Molecule {
     fn written_aromatic(&self, ring: &[NodeIndex]) -> bool {
         self.ring_edges(ring)
             .all(|edge| self.graph[edge].order == BondOrder::Aromatic)
+    }
+
+    // Mixed aromatic and Kekulé notation can explicitly retain a configured double bond.
+    fn protect_configured_double_bond(&self, ring: &[NodeIndex]) -> bool {
+        !self.bond_stereo.is_empty()
+            && self
+                .ring_edges(ring)
+                .any(|edge| self.bond_stereo.iter().any(|s| s.bond == edge))
+            && (ring.iter().any(|&node| self.graph[node].aromatic)
+                || self
+                    .ring_edges(ring)
+                    .any(|edge| self.graph[edge].order == BondOrder::Aromatic))
     }
 
     /// Whether these atoms hold 4n+2 π electrons, each of them giving some.
@@ -234,40 +266,100 @@ impl Molecule {
         ring_bonds
     }
 
-    /// One shortest ring from each end of each bond, without duplicates. Trying both
-    /// ends retains local ties without enumerating combinations around macrocycles.
-    // shortcut: representative rings can miss extensive ties; revisit for full corpus order independence.
+    /// Shortest rings through every covalent ring bond, without duplicates.
     fn rings(&self, ring_bonds: &FixedBitSet) -> Vec<Vec<NodeIndex>> {
-        let mut seen: HashSet<Vec<NodeIndex>> = HashSet::new();
+        let mut seen = HashSet::new();
         let mut rings = Vec::new();
-        let mut parent = vec![None; self.graph.node_bound()];
+        let mut record = |ring: Vec<NodeIndex>| {
+            let mut key: Vec<_> = self.ring_edges(&ring).collect();
+            key.sort_unstable();
+            if seen.insert(key) {
+                rings.push(ring);
+            }
+        };
+        let mut visited = vec![None; self.graph.node_bound()];
         let mut queue = Vec::new();
         for edge in (&self.graph)
             .edge_references()
             .filter(|edge| ring_bonds.contains(edge.id().index()))
         {
-            for (from, to) in [
-                (edge.source(), edge.target()),
-                (edge.target(), edge.source()),
-            ] {
-                let Some(ring) = self.shortest_path_without(
-                    from,
-                    to,
-                    edge.id(),
-                    ring_bonds,
-                    &mut parent,
-                    &mut queue,
-                ) else {
-                    continue;
-                };
-                let mut key = ring.clone();
-                key.sort_unstable();
-                if seen.insert(key) {
-                    rings.push(ring);
+            let (from, to) = (edge.source(), edge.target());
+            let Some(ring) = self.shortest_path_without(
+                from,
+                to,
+                edge.id(),
+                ring_bonds,
+                &mut visited,
+                &mut queue,
+            ) else {
+                continue;
+            };
+            let paths = visited[to.index()].map_or(1, |visit| visit.paths);
+            match paths {
+                1 => record(ring),
+                2..=MAX_SHORTEST_RING_PATHS => {
+                    self.visit_shortest_rings(
+                        from,
+                        to,
+                        edge.id(),
+                        ring_bonds,
+                        &visited,
+                        &mut record,
+                    );
+                }
+                // shortcut: keep two representatives for many tied paths, revisit if these
+                // macrocycles need order-independent perception.
+                _ => {
+                    record(ring);
+                    if let Some(reverse) = self.shortest_path_without(
+                        to,
+                        from,
+                        edge.id(),
+                        ring_bonds,
+                        &mut visited,
+                        &mut queue,
+                    ) {
+                        record(reverse);
+                    }
                 }
             }
         }
         rings
+    }
+
+    /// Walk the shortest-path DAG backward, visiting only nodes on a shortest path.
+    fn visit_shortest_rings(
+        &self,
+        from: NodeIndex,
+        to: NodeIndex,
+        skip: EdgeIndex,
+        ring_bonds: &FixedBitSet,
+        visited: &[Option<RingVisit>],
+        record: &mut impl FnMut(Vec<NodeIndex>),
+    ) {
+        let predecessors = |node: NodeIndex| {
+            let distance = visited[node.index()].map_or(0, |visit| visit.distance);
+            self.graph.edges(node).filter_map(move |edge| {
+                if edge.id() == skip || !ring_bonds.contains(edge.id().index()) {
+                    return None;
+                }
+                let next = edge.target();
+                visited[next.index()]
+                    .filter(|visit| visit.distance + 1 == distance)
+                    .map(|_| next)
+            })
+        };
+        let mut path = vec![(to, predecessors(to))];
+        while let Some((node, previous)) = path.last_mut() {
+            if *node == from {
+                record(path.iter().map(|&(node, _)| node).collect());
+                path.pop();
+            } else if let Some(next) = previous.next() {
+                path.push((next, predecessors(next)));
+            } else {
+                path.pop();
+            }
+        }
     }
 
     /// The shortest ring of covalent bonds through a bond, as its atoms; `ring_bonds`
@@ -281,8 +373,8 @@ impl Molecule {
         if !ring_bonds.contains(edge.index()) {
             return None;
         }
-        let mut parent = vec![None; self.graph.node_bound()];
-        self.shortest_path_without(a, b, edge, ring_bonds, &mut parent, &mut Vec::new())
+        let mut visited = vec![None; self.graph.node_bound()];
+        self.shortest_path_without(a, b, edge, ring_bonds, &mut visited, &mut Vec::new())
     }
 
     /// Breadth-first search from `from` to `to` that may not use `skip`; the path
@@ -293,15 +385,19 @@ impl Molecule {
         to: NodeIndex,
         skip: EdgeIndex,
         ring_bonds: &FixedBitSet,
-        parent: &mut [Option<NodeIndex>],
+        visited: &mut [Option<RingVisit>],
         queue: &mut Vec<NodeIndex>,
     ) -> Option<Vec<NodeIndex>> {
         // Retain every queued node, including those left at an early return, so
-        // the next search clears only the parent entries this search touched.
+        // the next search clears only the entries this search touched.
         for node in queue.drain(..) {
-            parent[node.index()] = None;
+            visited[node.index()] = None;
         }
-        parent[from.index()] = Some(from);
+        visited[from.index()] = Some(RingVisit {
+            parent: from,
+            distance: 0,
+            paths: 1,
+        });
         queue.push(from);
         let mut head = 0;
         while head < queue.len() {
@@ -311,25 +407,33 @@ impl Molecule {
                 let mut path = vec![to];
                 let mut current = to;
                 while current != from {
-                    current = parent[current.index()]
-                        .unwrap_or_else(|| panic!("visited node has a parent"));
+                    current = visited[current.index()]?.parent;
                     path.push(current);
                 }
                 return Some(path);
             }
+            let visit = visited[node.index()]?;
+            let distance = visit.distance + 1;
             for edge in self
                 .graph
                 .edges(node)
                 .filter(|edge| edge.id() != skip && ring_bonds.contains(edge.id().index()))
             {
-                let next = if edge.source() == node {
-                    edge.target()
-                } else {
-                    edge.source()
-                };
-                if parent[next.index()].is_none() {
-                    parent[next.index()] = Some(node);
-                    queue.push(next);
+                let next = edge.target();
+                match &mut visited[next.index()] {
+                    Some(next_visit) if next_visit.distance == distance => {
+                        next_visit.paths =
+                            (next_visit.paths + visit.paths).min(MAX_SHORTEST_RING_PATHS + 1);
+                    }
+                    Some(_) => {}
+                    slot @ None => {
+                        *slot = Some(RingVisit {
+                            parent: node,
+                            distance,
+                            paths: visit.paths,
+                        });
+                        queue.push(next);
+                    }
                 }
             }
         }
