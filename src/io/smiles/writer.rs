@@ -105,6 +105,14 @@ fn odd_permutation(from: &[Site], to: &[Site]) -> Option<bool> {
     Some(inversions % 2 == 1)
 }
 
+fn other_end(edge: EdgeReference<'_, Bond>, node: NodeIndex) -> NodeIndex {
+    if edge.source() == node {
+        edge.target()
+    } else {
+        edge.source()
+    }
+}
+
 /// Whether `stereo` puts `a` at its first end and `b` at its second on the same side.
 fn same_side(stereo: &DoubleBondStereo, a: NodeIndex, b: NodeIndex) -> bool {
     let flips = usize::from(a != stereo.references[0]) + usize::from(b != stereo.references[1]);
@@ -237,12 +245,36 @@ impl<'a> Writer<'a> {
         self.position[node.index()] > self.position[other.index()]
     }
 
-    /// Picks `/` and `\` bonds for every double-bond configuration, then checks that the
-    /// reader gets the same configurations, and no others, back from them.
-    #[allow(
-        clippy::too_many_lines,
-        reason = "direction selection and parity constraints form one checked assignment"
-    )]
+    fn marker_candidates(
+        &self,
+        end: NodeIndex,
+        partner: NodeIndex,
+    ) -> impl Iterator<Item = EdgeReference<'_, Bond>> {
+        self.molecule.graph.edges(end).filter(move |&edge| {
+            let other = other_end(edge, end);
+            let markable = match edge.weight().order {
+                BondOrder::Single => true,
+                // A slash between two lowercase atoms reads back as aromatic.
+                BondOrder::Aromatic => self.lowercase[end.index()] && self.lowercase[other.index()],
+                _ => false,
+            };
+            other != partner && markable
+        })
+    }
+
+    fn completes_unconfigured(&self, node: NodeIndex, marked: impl Fn(usize) -> bool) -> bool {
+        let molecule = self.molecule;
+        molecule.graph.edges(node).any(|double| {
+            double.weight().order == BondOrder::Double
+                && !molecule.bond_stereo.iter().any(|s| s.bond == double.id())
+                && molecule
+                    .graph
+                    .edges(other_end(double, node))
+                    .any(|edge| marked(edge.id().index()))
+        })
+    }
+
+    /// Picks slash marks for each configured double bond and tries alternatives when needed.
     fn assign_directions(&mut self) -> Result<(), WriteError> {
         let molecule = self.molecule;
         if molecule.bond_stereo.is_empty() {
@@ -256,31 +288,11 @@ impl<'a> Writer<'a> {
                 .min()
         });
         let edges = molecule.graph.edge_bound();
-        let other_end = |edge: EdgeReference<'_, Bond>, end: NodeIndex| {
-            if edge.source() == end {
-                edge.target()
-            } else {
-                edge.source()
-            }
-        };
-        let lowercase = &self.lowercase;
-        let candidates = |end: NodeIndex, partner: NodeIndex| {
-            molecule.graph.edges(end).filter(move |&edge| {
-                let other = other_end(edge, end);
-                let markable = match edge.weight().order {
-                    BondOrder::Single => true,
-                    // A slash between two lowercase atoms reads back as aromatic.
-                    BondOrder::Aromatic => lowercase[end.index()] && lowercase[other.index()],
-                    _ => false,
-                };
-                other != partner && markable
-            })
-        };
         // Reserve marks with no alternative so earlier choices don't conflict with them.
         let mut required = vec![false; edges];
         for s in &stereo {
             for side in [0, 1] {
-                let mut options = candidates(s.ends[side], s.ends[1 - side]);
+                let mut options = self.marker_candidates(s.ends[side], s.ends[1 - side]);
                 let first = options.next().ok_or(WriteError::DoubleBondStereo)?;
                 if options.next().is_none() {
                     required[first.id().index()] = true;
@@ -295,18 +307,6 @@ impl<'a> Writer<'a> {
                     && !molecule.bond_stereo.iter().any(|s| s.bond == edge.id())
             })
         };
-        // A mark at node and one already chosen or required at the other end would
-        // accidentally configure this double bond.
-        let completes = |marked: &[bool], node: NodeIndex| {
-            molecule.graph.edges(node).any(|double| {
-                double.weight().order == BondOrder::Double
-                    && !molecule.bond_stereo.iter().any(|s| s.bond == double.id())
-                    && molecule
-                        .graph
-                        .edges(other_end(double, node))
-                        .any(|edge| required[edge.id().index()] || marked[edge.id().index()])
-            })
-        };
         // one mark at each end: a bond already marked, else one that configures no other
         // double bond with the marks so far, else one shared with another configured double
         // bond, else one leading to no unconfigured double bond, which a later mark could
@@ -318,12 +318,13 @@ impl<'a> Writer<'a> {
             sides.sort_by_key(|&side| self.position[s.ends[side].index()]);
             for side in sides {
                 let (end, partner) = (s.ends[side], s.ends[1 - side]);
-                let best = candidates(end, partner)
+                let best = self
+                    .marker_candidates(end, partner)
                     .min_by_key(|&edge| {
                         let other = other_end(edge, end);
                         (
                             !marked[edge.id().index()],
-                            completes(&marked, other),
+                            self.completes_unconfigured(other, |i| required[i] || marked[i]),
                             !configured_end(other),
                             unconfigured(other),
                             self.position[other.index()],
@@ -336,11 +337,85 @@ impl<'a> Writer<'a> {
                 }
             }
         }
+        self.resolve_directions(&stereo, &marked, &chosen)
+            .or_else(|_| self.retry_directions(&stereo))
+    }
+
+    fn retry_directions(&mut self, stereo: &[&DoubleBondStereo]) -> Result<(), WriteError> {
+        let mut sides: Vec<_> = stereo
+            .iter()
+            .flat_map(|s| [s.ends, [s.ends[1], s.ends[0]]])
+            .map(|[end, partner]| {
+                let mut options: Vec<_> = self
+                    .marker_candidates(end, partner)
+                    .map(|edge| (other_end(edge, end), edge.id()))
+                    .collect();
+                options.sort_unstable_by_key(|&(other, _)| self.position[other.index()]);
+                (end, partner, options)
+            })
+            .collect();
+        sides.sort_unstable_by_key(|(end, partner, options)| {
+            (
+                options.len(),
+                self.position[end.index()],
+                self.position[partner.index()],
+            )
+        });
+
+        let mut marked = vec![false; self.directions.len()];
+        let mut chosen = Vec::new();
+        let mut stack = Vec::new();
+        let (mut side, mut start) = (0, 0);
+        // shortcut: cap retries at 4096 steps, revisit if valid corpus cases hit the limit.
+        for _ in 0..4096 {
+            // One mark can already cover another configured end.
+            while sides.get(side).is_some_and(|(_, _, options)| {
+                options.iter().any(|&(_, edge)| marked[edge.index()])
+            }) {
+                side += 1;
+            }
+            if let Some((end, _, options)) = sides.get(side) {
+                let completes = |node| self.completes_unconfigured(node, |i| marked[i]);
+                if let Some((i, &(_, edge))) = options
+                    .iter()
+                    .enumerate()
+                    .skip(start)
+                    .find(|&(_, &(other, _))| !completes(*end) && !completes(other))
+                {
+                    marked[edge.index()] = true;
+                    chosen.push(edge.index());
+                    stack.push((side, i + 1));
+                    side += 1;
+                    start = 0;
+                    continue;
+                }
+            } else {
+                self.directions.fill(None);
+                if self.resolve_directions(stereo, &marked, &chosen).is_ok() {
+                    return Ok(());
+                }
+            }
+            (side, start) = stack.pop().ok_or(WriteError::DoubleBondStereo)?;
+            let edge = chosen.pop().ok_or(WriteError::DoubleBondStereo)?;
+            marked[edge] = false;
+        }
+        Err(WriteError::DoubleBondStereo)
+    }
+
+    /// Assigns slash directions and checks that the reader gets the same configurations back.
+    fn resolve_directions(
+        &mut self,
+        stereo: &[&DoubleBondStereo],
+        marked: &[bool],
+        chosen: &[usize],
+    ) -> Result<(), WriteError> {
+        let molecule = self.molecule;
+        let edges = molecule.graph.edge_bound();
         // Every two marks around a configured double bond fix how their directions relate,
         // `direction[a] != direction[b] == parity`; a mark seen from its end is up when its
         // direction differs from whether that end is written second.
         let mut constraints: Vec<Vec<(usize, bool)>> = vec![Vec::new(); edges];
-        for s in &stereo {
+        for s in stereo {
             let marks = [0, 1].map(|side| {
                 let (end, partner) = (s.ends[side], s.ends[1 - side]);
                 molecule
@@ -367,7 +442,7 @@ impl<'a> Writer<'a> {
             let ((a, x, a_second), (b, y, b_second)) = (marks[0][0], marks[1][0]);
             link((a, a_second), (b, b_second), !same_side(s, x, y));
         }
-        for &start in &chosen {
+        for &start in chosen {
             if self.directions[start].is_some() {
                 continue;
             }

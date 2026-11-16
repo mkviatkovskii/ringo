@@ -462,6 +462,23 @@ mod tests {
     }
 
     #[test]
+    fn canonicalizes_surechembl_double_bond_stereo() {
+        let records = include_str!("../../../tests/data/surechembl_double_bond_stereo.smi");
+        for record in records.lines() {
+            let molecule = parse_molecule(record).unwrap().1;
+            let output =
+                canonical_smiles(&molecule).unwrap_or_else(|error| panic!("{record}: {error:?}"));
+            let reread = parse_molecule(&output).unwrap().1;
+            assert_eq!(molecule.exact_match(&reread), Ok(true), "{record}");
+            assert_eq!(canonical(&output), output, "{record}");
+
+            let ranks: Vec<_> = (0..molecule.count_atoms()).rev().collect();
+            let reversed = super::super::writer::write_smiles_ranked(&molecule, &ranks).unwrap();
+            assert_eq!(canonical(&reversed), output, "{record}");
+        }
+    }
+
+    #[test]
     fn opposite_configurations_split_otherwise_identical_branches() {
         for input in [
             "F[C@H](Cl)[C@H](Br)[C@@H](F)Cl",
