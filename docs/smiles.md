@@ -57,6 +57,10 @@ double bond (such as `=C=`, `=S(=O)` or `=[N+]=`) do not donate π electrons in
 Hückel perception, so those rings keep their double bonds and valences.
 Charged carbon (`[c-]`, `[c+]`) and neutral boron only donate 2 or 0 electrons in
 Hückel perception when three-coordinate.
+Ring double-bond atoms whose reduced σ-bond valence would read back as an aromatic
+donor or empty-p-orbital atom (`=[S]-`, `=[PH]-`, `=[As]-`, or 4-valent `=[N]-`)
+also do not donate a π electron in Hückel perception, so those rings keep their
+Kekulé double bonds and valences.
 
 ## Atom maps and classes
 

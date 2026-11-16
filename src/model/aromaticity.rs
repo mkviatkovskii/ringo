@@ -189,9 +189,12 @@ impl Molecule {
         let mut ring_doubles = 0u8;
         let mut ring_aromatic = false;
         let mut exocyclic_double = None;
+        let mut sigma_valence = u32::from(atom.hs) + u32::from(atom.implicit_hs);
+        let mut neighbours = usize::from(atom.hs) + usize::from(atom.implicit_hs);
         for edge in self.graph.edges(node) {
             let in_ring = context.bonds.contains(edge.id().index());
-            match edge.weight().order {
+            let order = edge.weight().order;
+            match order {
                 BondOrder::Triple => return None,
                 BondOrder::Double if in_ring => ring_doubles += 1,
                 BondOrder::Aromatic if in_ring => ring_aromatic = true,
@@ -205,6 +208,12 @@ impl Molecule {
                     };
                     exocyclic_double = Some(self.graph[other].element.atomic_number);
                 }
+            }
+            if order != BondOrder::Dative {
+                neighbours += 1;
+                sigma_valence += 1;
+            } else if edge.weight().donor != Some(node) {
+                sigma_valence += 1;
             }
         }
         // An atom with cumulated or mixed ring/exocyclic double bonds (`=C=`, `=S(=O)`, `=[N+]=`)
@@ -220,15 +229,16 @@ impl Molecule {
             None => {}
         }
         if ring_doubles == 1 {
-            return Some(1);
+            // A ring double-bond atom whose σ-bond valence already reads back as an aromatic
+            // donor or empty-p-orbital atom (`=[S]-`, `=[PH]-`, `=[As]-`, 4-valent `=[N]-`)
+            // would lose a valence unit under aromatic notation, so keep the ring Kekulé.
+            return (!Self::aromatic_donor_or_empty(
+                atom.element.atomic_number,
+                atom.charge,
+                sigma_valence,
+            ))
+            .then_some(1);
         }
-        let neighbours = self
-            .graph
-            .edges(node)
-            .filter(|edge| edge.weight().order != BondOrder::Dative)
-            .count()
-            + usize::from(atom.hs)
-            + usize::from(atom.implicit_hs);
         match (atom.element.atomic_number, atom.charge) {
             // a lone pair: pyrrole's N, furan's O, thiophene's S, cyclopentadienyl anion
             (7 | 15, 0) | (6, -1) if neighbours == 3 => Some(2),
@@ -569,6 +579,18 @@ mod tests {
             ("[B]1Oc2ccccc2O1", 6),
             ("F[B-](F)(F)F.[C+]1Sc2ccccc2S1", 6),
             ("CN1C=CN(C)[CH2+]1Cl.F[B-](F)(F)F", 0),
+            ("C1=CC=[S]C=C1", 0),
+            ("C1=[PH]c2ccccc2N1", 6),
+            ("N[As]1=CC=CC=C1", 0),
+            ("[Cu][N]1=CC=CC=C1", 0),
+            (
+                "C[C@@H]1CN(c2cc(F)c(C3=[S]C(C(=O)N4CCN(C)CC4)=CN3)cc2NC(=O)c2c[nH]c(=O)cc2C(F)(F)F)C[C@H](C)N1C",
+                12,
+            ),
+            (
+                "C1=CC=[N]([Fe+2]([N]2=CC=CC=C2)([N]2=CC=CC=C2)([N]2=CC=CC=C2)([N]2=CC=CC=C2)[N]2=CC=CC=C2)C=C1",
+                0,
+            ),
         ] {
             let count = aromatic_atoms(smiles).iter().filter(|&&a| a).count();
             assert_eq!(count, expected_aromatic, "{smiles}");

@@ -498,6 +498,22 @@ fn aromatic_silicon_round_trips() {
 }
 
 #[test]
+fn hypervalent_ring_double_bonds_keep_kekule_and_round_trip() {
+    for smiles in [
+        "C1=CC=[S]C=C1",
+        "C[C@@H]1CN(c2cc(F)c(C3=[S]C(C(=O)N4CCN(C)CC4)=CN3)cc2NC(=O)c2c[nH]c(=O)cc2C(F)(F)F)C[C@H](C)N1C",
+        "C1=[PH]c2ccccc2N1",
+        "N[As]1=CC=CC=C1",
+        "[Cu][N]1=CC=CC=C1",
+        "C1=CC=N2=[O][Zn]3([O]=N4=CC=CC=C4[S]3)[S]C2=C1",
+        "[O]=[U]1234(=[O])[N]5=C6N=C7c8ccccc8C(=[N]71)N=c1c7ccccc7c([n]12)=NC1=[N]3\
+         C(=Nc2c3ccccc3c([n]24)N=C5c2ccccc26)c2ccccc21",
+    ] {
+        assert_round_trip(smiles);
+    }
+}
+
+#[test]
 fn every_test_fixture_round_trips() {
     for file in [
         include_str!("../../../../tests/data/stereo.smi"),
@@ -523,18 +539,29 @@ fn reordered_centres_without_a_renumbering_are_errors() {
 
 #[test]
 fn aromatic_valence_that_notation_cannot_give_back_is_an_error() {
-    // the nitrogen has valence four; written `n` it would read back with three
+    use crate::model::bond::BondOrder;
+    // Perception keeps four-valent `[Cu][N]1=CC=CC=C1` Kekulé so it round-trips cleanly.
+    assert_round_trip("[Cu][N]1=CC=CC=C1");
+    let mut molecule = parse("[Cu][N]1=CC=CC=C1");
+    // Forcing the ring aromatic triggers the writer's valence guard, because written `n`
+    // would read back with three valence units instead of four.
+    for atom in molecule.graph.node_weights_mut() {
+        if atom.element.atomic_number != 29 {
+            atom.aromatic = true;
+        }
+    }
+    let edge_ids: Vec<_> = molecule.graph.edge_indices().collect();
+    for id in edge_ids {
+        if let Some((a, b)) = molecule.graph.edge_endpoints(id) {
+            if molecule.graph[a].element.atomic_number != 29
+                && molecule.graph[b].element.atomic_number != 29
+            {
+                molecule.graph[id].order = BondOrder::Aromatic;
+            }
+        }
+    }
     assert_eq!(
-        write_smiles(&parse("[Cu][N]1=CC=CC=C1")).err(),
-        Some(WriteError::AromaticValence)
-    );
-    // as in uranyl phthalocyanine, where the change makes two more rings aromatic
-    assert_eq!(
-        write_smiles(&parse(
-            "[O]=[U]1234(=[O])[N]5=C6N=C7c8ccccc8C(=[N]71)N=c1c7ccccc7c([n]12)=NC1=[N]3\
-             C(=Nc2c3ccccc3c([n]24)N=C5c2ccccc26)c2ccccc21"
-        ))
-        .err(),
+        write_smiles(&molecule).err(),
         Some(WriteError::AromaticValence)
     );
 }
