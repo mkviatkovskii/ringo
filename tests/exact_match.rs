@@ -304,3 +304,20 @@ fn corpus_molecules_match_themselves_only() {
         }
     }
 }
+
+#[test]
+fn symmetric_dendrimers_resolve_without_too_symmetric_error() {
+    let tree = "C(C(C(CC)CC)C(CC)CC)C(C(CC)CC)C(CC)CC";
+    let a = parse(&format!("[C@H](F)(Cl)C({tree})({tree})C"));
+    let b = parse(&format!("[C@@H](F)(Cl)C({tree})({tree})C"));
+    assert_eq!(a.exact_match(&a), Ok(true));
+    assert_eq!(a.exact_match(&b), Ok(false));
+
+    // CHEMBL4783905 vs CHEMBL4792854 (9-arm symmetric dendrimer epimers)
+    let epimer_a = parse("O=C(NC(COCc1cn(CCOCCOc2ccc(-c3cn(C[C@@H]4NC[C@@H](O)[C@H]4O)nn3)cc2)nn1)(COCc1cn(CCOCCOc2ccc(-c3cn(C[C@@H]4NC[C@@H](O)[C@H]4O)nn3)cc2)nn1)COCc1cn(CCOCCOc2ccc(-c3cn(C[C@@H]4NC[C@@H](O)[C@H]4O)nn3)cc2)nn1)c1cc(C(=O)NC(COCc2cn(CCOCCOc3ccc(-c4cn(C[C@@H]5NC[C@@H](O)[C@H]5O)nn4)cc3)nn2)(COCc2cn(CCOCCOc3ccc(-c4cn(C[C@@H]5NC[C@@H](O)[C@H]5O)nn4)cc3)nn2)COCc2cn(CCOCCOc3ccc(-c4cn(C[C@@H]5NC[C@@H](O)[C@H]5O)nn4)cc3)nn2)cc(C(=O)NC(COCc2cn(CCOCCOc3ccc(-c4cn(C[C@@H]5NC[C@@H](O)[C@H]5O)nn4)cc3)nn2)(COCc2cn(CCOCCOc3ccc(-c4cn(C[C@@H]5NC[C@@H](O)[C@H]5O)nn4)cc3)nn2)COCc2cn(CCOCCOc3ccc(-c4cn(C[C@@H]5NC[C@@H](O)[C@H]5O)nn4)cc3)nn2)c1");
+    let epimer_b = parse("O=C(NC(COCc1cn(CCOCCOc2ccc(-c3cn(C[C@H]4NC[C@@H](O)[C@H]4O)nn3)cc2)nn1)(COCc1cn(CCOCCOc2ccc(-c3cn(C[C@H]4NC[C@@H](O)[C@H]4O)nn3)cc2)nn1)COCc1cn(CCOCCOc2ccc(-c3cn(C[C@H]4NC[C@@H](O)[C@H]4O)nn3)cc2)nn1)c1cc(C(=O)NC(COCc2cn(CCOCCOc3ccc(-c4cn(C[C@H]5NC[C@@H](O)[C@H]5O)nn4)cc3)nn2)(COCc2cn(CCOCCOc3ccc(-c4cn(C[C@H]5NC[C@@H](O)[C@H]5O)nn4)cc3)nn2)COCc2cn(CCOCCOc3ccc(-c4cn(C[C@H]5NC[C@@H](O)[C@H]5O)nn4)cc3)nn2)cc(C(=O)NC(COCc2cn(CCOCCOc3ccc(-c4cn(C[C@H]5NC[C@@H](O)[C@H]5O)nn4)cc3)nn2)(COCc2cn(CCOCCOc3ccc(-c4cn(C[C@H]5NC[C@@H](O)[C@H]5O)nn4)cc3)nn2)COCc2cn(CCOCCOc3ccc(-c4cn(C[C@H]5NC[C@@H](O)[C@H]5O)nn4)cc3)nn2)c1");
+    let plain = parse("O=C(NC(COCc1cn(CCOCCOc2ccc(-c3cn(CC4NCC(O)C4O)nn3)cc2)nn1)(COCc1cn(CCOCCOc2ccc(-c3cn(CC4NCC(O)C4O)nn3)cc2)nn1)COCc1cn(CCOCCOc2ccc(-c3cn(CC4NCC(O)C4O)nn3)cc2)nn1)c1cc(C(=O)NC(COCc2cn(CCOCCOc3ccc(-c4cn(CC5NCC(O)C5O)nn4)cc3)nn2)(COCc2cn(CCOCCOc3ccc(-c4cn(CC5NCC(O)C5O)nn4)cc3)nn2)COCc2cn(CCOCCOc3ccc(-c4cn(CC5NCC(O)C5O)nn4)cc3)nn2)cc(C(=O)NC(COCc2cn(CCOCCOc3ccc(-c4cn(CC5NCC(O)C5O)nn4)cc3)nn2)(COCc2cn(CCOCCOc3ccc(-c4cn(CC5NCC(O)C5O)nn4)cc3)nn2)COCc2cn(CCOCCOc3ccc(-c4cn(CC5NCC(O)C5O)nn4)cc3)nn2)c1");
+    assert_eq!(epimer_a.exact_match(&epimer_a), Ok(true));
+    assert_eq!(epimer_a.exact_match(&epimer_b), Ok(false));
+    assert_eq!(epimer_a.exact_match(&plain), Ok(false));
+}

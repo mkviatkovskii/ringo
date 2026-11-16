@@ -43,6 +43,7 @@ impl Molecule {
     /// `Aromatic` bond becomes single. Afterwards a molecule has the same atoms and bonds
     /// whether it was written in Kekulé form ("C1=CC=CC=C1") or aromatic form ("c1ccccc1").
     pub fn perceive_aromaticity(&mut self) {
+        self.exact_cache.take();
         let ring_bonds = self.covalent_ring_bonds();
         let rings = self.rings(&ring_bonds);
         let context = RingContext::new(&rings, ring_bonds);

@@ -282,15 +282,18 @@ unsuccessful if any record failed. `--search-limit` sets the maximum
 search nodes per molecule (default 100,000). Exhaustion returns `SearchLimit`,
 never a provisional result. The library also exposes `canonical_smiles_with_limit`.
 
-Replacing the `#58`/`#65` `exact_search` key and VF2 verifier with canonical-order checks remains
-outstanding before closing [#63](https://github.com/mkviatkovskii/ringo/issues/63). On ChEMBL 37
-(`2,897,805` records), `canonical_smiles` parsed, canonicalized and stayed idempotent on every
-record with zero search-limit errors (including the `49` dendrimers where `#65` hits
-`TooSymmetric`), agreed with the `#65` oracle across all `326,669` comparable colliding-key
-pairs (`0` disagreements), passed 10-order shuffling across a `49,963`-molecule sample plus all
-`49` `TooSymmetric` molecules, and matched RDKit on all `159` RDKit duplicate groups plus `19`
-additional groups with non-stereogenic spiro[3.3]heptane or adamantane `@` marks (`2,897,619`
-vs `2,897,639` distinct SMILES).
+`Molecule::exact_match` and `ringo-search --exact` retain `Molecule::exact_key` as the
+`.key` index lookup and use a symmetry-pruned isomorphism matcher (`src/model/matcher.rs`
+with refined color hashes, incremental stereo verification, and stabilizer orbit pruning)
+built to be shared with future substructure search ([#57](https://github.com/mkviatkovskii/ringo/issues/57)).
+On ChEMBL 37 (`2,897,805` records), `canonical_smiles` parsed, canonicalized and stayed
+idempotent on every record with zero search-limit errors, `Molecule::exact_match` agreed
+with `canonical_smiles` across all `326,670` colliding `exact_key` pairs (`0` disagreements,
+`0` `TooSymmetric`) and resolved all `1,093,596` stereo-vs-plain pairs (including the `49`
+symmetric dendrimers), 10-order shuffling passed across a `49,963`-molecule sample plus all
+`49` dendrimers, and `canonical_smiles` matched RDKit on all `159` RDKit duplicate groups
+plus `19` additional groups with non-stereogenic spiro[3.3]heptane or adamantane `@` marks
+(`2,897,619` vs `2,897,639` distinct SMILES).
 
 ## Known gaps
 
