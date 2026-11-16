@@ -12,7 +12,7 @@ brackets, aromatic atom notation, isotopes, formal charges, bracket hydrogens,
 implicit hydrogens, single/double/triple/aromatic bonds, branches, ring closures,
 and disconnected components separated by a dot. The wildcard `*` is represented
 as atomic number zero; it does not turn a similarity query into a SMARTS pattern.
-Ring labels are one digit or `%` followed by two digits.
+Ring labels are one digit, `%` followed by two digits, or parenthesized `%(N)` multi-digit labels.
 
 Supported Kekulé and aromatic spellings are normalized by aromaticity perception.
 A ring that fails Hückel's rule stays aromatic only if all its bonds were written
@@ -249,14 +249,13 @@ atom classes, aromaticity, bond orders, dative bonds and stereo.
   is written `[Si]` with `:` bonds.
 - A single bond between two aromatic atoms is written `-`; ring-bond symbols go on
   the opening digit. Ring digits are reused once closed, but not on the atom that
-  closes them, and go on to `%10`–`%99`.
+  closes them, going from `1`–`9` to `%10`–`%99` and `%(N)` beyond 99.
 - `@`/`@@` are recomputed for the ligand order of the output, for tetrahedral centres
   and allenes. `@SP1`–`@SP3`, `@TB1`–`@TB20`, and `@OH1`–`@OH30` are renumbered for
   any ligand ordering. `/` and `\` are chosen again, then checked against what the
   reader makes of them.
 - A configuration the output can't express is an error, never a different molecule:
-  double-bond configurations that `/` and `\` can't mark in that order, and more than
-  99 open rings.
+  double-bond configurations that `/` and `\` can't mark in that order.
 
 The graph-ranking stage of [#63](https://github.com/mkviatkovskii/ringo/issues/63)
 is available through `canonical::canonical_smiles(&molecule)`. It sorts atom
@@ -288,7 +287,7 @@ exact-matcher oracle and throughput acceptance runs remain outstanding.
 
 - Enhanced stereo and CXSMILES interpretation. Whitespace-separated extension
   blocks are currently treated as trailing record text, not chemical metadata.
-- Tilde (`~`) bonds and extended ring labels such as `%(100)`.
+- Tilde (`~`) query bonds.
 - Some directional/aromatic ring cases, such as the expanded porphyrin CHEBI:47035;
   the current parser rejects these rather than discarding their stereo annotations.
 - CIP assignment and complete stereo normalization in canonical SMILES.

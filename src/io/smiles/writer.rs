@@ -504,8 +504,8 @@ impl<'a> Writer<'a> {
             Open,
             Close,
         }
-        let mut digits: Vec<Option<u8>> = vec![None; self.molecule.graph.edge_bound()];
-        let mut in_use = [false; 100];
+        let mut digits: Vec<Option<usize>> = vec![None; self.molecule.graph.edge_bound()];
+        let mut in_use = vec![false; 100];
         for (i, &start) in self
             .order
             .iter()
@@ -544,22 +544,29 @@ impl<'a> Writer<'a> {
                         digit
                     } else {
                         // digits closed on this atom stay taken until after it
-                        let digit = (1..100u8)
-                            .find(|&digit| !in_use[usize::from(digit)])
-                            .ok_or(WriteError::TooManyRings)?;
-                        in_use[usize::from(digit)] = true;
+                        let digit =
+                            if let Some(digit) = (1..in_use.len()).find(|&digit| !in_use[digit]) {
+                                digit
+                            } else {
+                                let digit = in_use.len();
+                                in_use.push(false);
+                                digit
+                            };
+                        in_use[digit] = true;
                         digits[edge.index()] = Some(digit);
                         self.write_bond(out, node, partner);
                         digit
                     };
-                    if digit < 10 {
-                        out.push(char::from(b'0' + digit));
-                    } else {
+                    if let Some(single) = u8::try_from(digit).ok().filter(|&d| d < 10) {
+                        out.push(char::from(b'0' + single));
+                    } else if digit < 100 {
                         let _ = write!(out, "%{digit}");
+                    } else {
+                        let _ = write!(out, "%({digit})");
                     }
                 }
                 for digit in closed {
-                    in_use[usize::from(digit)] = false;
+                    in_use[digit] = false;
                 }
                 if let Some((last, branches)) = self.children[node.index()].split_last() {
                     stack.push(Step::Atom(*last));

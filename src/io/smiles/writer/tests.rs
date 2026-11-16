@@ -364,6 +364,7 @@ fn writes_what_it_reads() {
 
 #[test]
 fn ring_digits_are_reused_and_go_past_nine() {
+    use std::fmt::Write;
     // a digit closed on an atom isn't reused on that atom, but is on the next one
     assert_eq!(write_smiles(&parse("C1CC12CC2")).unwrap(), "C1CC12CC2");
     assert_eq!(write_smiles(&parse("C1CC1C2CC2")).unwrap(), "C1CC1C1CC1");
@@ -373,6 +374,19 @@ fn ring_digits_are_reused_and_go_past_nine() {
     let written = write_smiles(&parse(&rings.repeat(2))).unwrap();
     assert!(written.contains("%10"), "{written}");
     assert_round_trip(&rings.repeat(2));
+
+    // >99 simultaneously open closures emit parenthesized %(N) labels and round-trip cleanly
+    let mut dense = String::from("C");
+    for i in 1..=101 {
+        let _ = write!(dense, "%({i})");
+    }
+    dense.push('C');
+    for i in 1..=101 {
+        let _ = write!(dense, "(C%({i}))");
+    }
+    let dense_written = write_smiles(&parse(&dense)).unwrap();
+    assert!(dense_written.contains("%(100)"), "{dense_written}");
+    assert_round_trip(&dense);
 }
 
 #[test]
