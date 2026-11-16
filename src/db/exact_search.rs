@@ -201,8 +201,11 @@ mod test {
     #[test]
     fn test_exact_search_reports_lines_it_cannot_compare() {
         let dir = TestDir::new("test_exact_search_undecided");
-        let smiles_file = index(&dir, &["C[Pt@SP1](F)(Cl)N", "CCO"]);
-        let hits = exact_search(&smiles_file, "C[Pt@SP2](F)(Cl)N").unwrap();
+        let tree = "C(C(C(CC)CC)C(CC)CC)C(C(CC)CC)C(CC)CC";
+        let target = format!("[C@H](F)(Cl)C({tree})({tree})C");
+        let query = format!("[C@@H](F)(Cl)C({tree})({tree})C");
+        let smiles_file = index(&dir, &[&target, "C[Pt@SP1](F)(Cl)N", "CCO"]);
+        let hits = exact_search(&smiles_file, &query).unwrap();
         assert_eq!(hits.lines, Vec::<String>::new());
         let undecided: Vec<_> = hits
             .undecided
@@ -211,8 +214,12 @@ mod test {
             .collect();
         assert_eq!(
             undecided,
-            [("C[Pt@SP1](F)(Cl)N", ExactMatchError::UnsupportedStereo)]
+            [(target.as_str(), ExactMatchError::TooSymmetric)]
         );
+
+        let sp = exact_search(&smiles_file, "C[Pt@SP2](F)(Cl)N").unwrap();
+        assert_eq!(sp.lines, Vec::<String>::new());
+        assert_eq!(sp.undecided, Vec::new());
     }
 
     #[test]

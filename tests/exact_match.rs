@@ -34,6 +34,9 @@ fn keys_ignore_stereo_and_separate_structures() {
         ("C[C@@H](C(=O)O)N", "CC(N)C(=O)O"),
         ("F/C=C/F", "F/C=C\\F"),
         ("NC(Br)=[C@]=C(O)C", "NC(Br)=[C@@]=C(O)C"),
+        ("F[Pt@SP1](Cl)(Br)I", "F[Pt@SP2](Cl)(Br)I"),
+        ("S[As@TB1](F)(Cl)(Br)N", "S[As@TB2](F)(Cl)(Br)N"),
+        ("C[Co@](F)(Cl)(Br)(I)S", "C[Co@@](F)(Cl)(Br)(I)S"),
     ] {
         assert_eq!(key(a), key(b), "{a} {b}");
     }
@@ -233,9 +236,49 @@ fn components_match_in_any_order() {
 }
 
 #[test]
-fn other_stereo_is_reported_unsupported() {
-    let a = parse("C[Pt@SP1](F)(Cl)[H]");
-    assert_eq!(a.exact_match(&a), Err(ExactMatchError::UnsupportedStereo));
+fn coordination_centres_compare_by_3d_geometry() {
+    assert_same(&[
+        // Square-planar equivalent spellings, vacancies and degenerate centers
+        ("C[Pt@SP1](F)(Cl)[H]", "C[Pt@SP2](Cl)(F)[H]"),
+        (
+            "Cl[Pt@SP1](Cl)(<-[NH3])<-[NH3]",
+            "[NH3]->[Pt@SP1](Cl)(Cl)<-[NH3]",
+        ),
+        (
+            "Cl[Pt@SP2](Cl)(<-[NH3])<-[NH3]",
+            "[NH3]->[Pt@SP3](Cl)(Cl)<-[NH3]",
+        ),
+        ("[Pt@SP1](C)(Cl)F", "C[Pt@SP3](Cl)F"),
+        ("[Pt@SP1](Cl)(Cl)(Cl)N", "[Pt](Cl)(Cl)(Cl)N"),
+        ("[Pt@SP1](CC)(CC)(CC)F", "[Pt](CC)(CC)(CC)F"),
+        ("F[As@TB3](CC)(CC)(Cl)Br", "F[As@TB4](CC)(CC)(Cl)Br"),
+        // OpenSMILES TB1..TB20 equivalence set
+        ("S[As@TB1](F)(Cl)(Br)N", "S[As@TB2](Br)(Cl)(F)N"),
+        ("S[As@TB1](F)(Cl)(Br)N", "S[As@TB5](F)(N)(Cl)Br"),
+        ("S[As@TB1](F)(Cl)(Br)N", "F[As@TB10](S)(Cl)(N)Br"),
+        ("S[As@TB1](F)(Cl)(Br)N", "F[As@TB15](Cl)(S)(Br)N"),
+        ("S[As@TB1](F)(Cl)(Br)N", "Br[As@TB20](Cl)(S)(F)N"),
+        // OpenSMILES OH1..OH30 equivalence set
+        ("C[Co@](F)(Cl)(Br)(I)S", "F[Co@@](S)(I)(C)(Cl)Br"),
+        ("C[Co@](F)(Cl)(Br)(I)S", "S[Co@OH5](F)(I)(Cl)(C)Br"),
+        ("C[Co@](F)(Cl)(Br)(I)S", "Br[Co@OH9](C)(S)(Cl)(F)I"),
+        ("C[Co@](F)(Cl)(Br)(I)S", "Br[Co@OH12](Cl)(I)(F)(S)C"),
+        ("C[Co@](F)(Cl)(Br)(I)S", "Cl[Co@OH15](C)(Br)(F)(I)S"),
+        ("C[Co@](F)(Cl)(Br)(I)S", "Cl[Co@OH19](C)(I)(F)(S)Br"),
+        ("C[Co@](F)(Cl)(Br)(I)S", "I[Co@OH27](Cl)(Br)(F)(S)C"),
+    ]);
+    assert_different(&[
+        (
+            "Cl[Pt@SP1](Cl)(<-[NH3])<-[NH3]",
+            "Cl[Pt@SP2](Cl)(<-[NH3])<-[NH3]",
+        ),
+        ("[Pt@SP1](C)(Cl)F", "[Pt@SP2](C)(Cl)F"),
+        ("[Pt@SP1](CC)(CC)(F)Cl", "[Pt@SP2](CC)(CC)(F)Cl"),
+        ("S[As@TB1](F)(Cl)(Br)N", "S[As@TB2](F)(Cl)(Br)N"),
+        ("CC[As@TB3](CC)(F)(Cl)Br", "CC[As@TB4](CC)(F)(Cl)Br"),
+        ("CC[As@TB3](CC)(F)(Cl)Br", "CC[As](CC)(F)(Cl)Br"),
+        ("C[Co@](F)(Cl)(Br)(I)S", "C[Co@@](F)(Cl)(Br)(I)S"),
+    ]);
 }
 
 #[test]

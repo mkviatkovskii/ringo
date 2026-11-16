@@ -47,13 +47,14 @@ enum Fate {
 }
 
 /// A stereo ligand, by its atom in the folded graph.
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum Site {
     Atom(usize),
     /// A hydrogen, by the atom it is on, so an allene's two terminal hydrogens differ.
     Hydrogen(usize),
     LonePair,
     Twin,
+    Vacancy,
 }
 
 impl Site {
@@ -72,6 +73,12 @@ enum Stereo {
         center: usize,
         ligands: [Site; 4],
         clockwise: bool,
+    },
+    Coordination {
+        center: usize,
+        ligands: [Site; 6],
+        len: usize,
+        configuration: Configuration,
     },
     DoubleBond {
         ends: [usize; 2],
@@ -92,6 +99,23 @@ impl Stereo {
                 ligands: ligands.map(|site| site.mapped(mapping)),
                 clockwise,
             },
+            Stereo::Coordination {
+                center,
+                ligands,
+                len,
+                configuration,
+            } => {
+                let mut mapped = [Site::Vacancy; 6];
+                for (slot, site) in mapped[..len].iter_mut().zip(&ligands[..len]) {
+                    *slot = site.mapped(mapping);
+                }
+                Stereo::Coordination {
+                    center: mapping[center],
+                    ligands: mapped,
+                    len,
+                    configuration,
+                }
+            }
             Stereo::DoubleBond {
                 ends,
                 references,
@@ -107,7 +131,9 @@ impl Stereo {
     /// The atoms it belongs to, sorted, so a mapped element can be looked up.
     fn anchor(&self, mapping: impl Fn(usize) -> usize) -> [usize; 2] {
         match self {
-            Stereo::Parity { center, .. } => [mapping(*center); 2],
+            Stereo::Parity { center, .. } | Stereo::Coordination { center, .. } => {
+                [mapping(*center); 2]
+            }
             Stereo::DoubleBond { ends, .. } => {
                 let [a, b] = ends.map(mapping);
                 [a.min(b), a.max(b)]
@@ -141,6 +167,29 @@ impl Stereo {
                     .filter(|&(i, j)| positions[i] > positions[j])
                     .count();
                 (inversions % 2 == 0) == (clockwise == target_clockwise)
+            }
+            (
+                Stereo::Coordination {
+                    ligands,
+                    len,
+                    configuration,
+                    ..
+                },
+                Stereo::Coordination {
+                    ligands: target_ligands,
+                    len: target_len,
+                    configuration: target_configuration,
+                    ..
+                },
+            ) => {
+                let mut mapped = [Site::Vacancy; 6];
+                for (slot, site) in mapped[..*len].iter_mut().zip(&ligands[..*len]) {
+                    *slot = site.mapped(mapping);
+                }
+                let lhs = configuration.coordination_geometry(&mapped[..*len]);
+                let rhs =
+                    target_configuration.coordination_geometry(&target_ligands[..*target_len]);
+                lhs.is_some() && lhs == rhs
             }
             (
                 Stereo::DoubleBond {
@@ -357,6 +406,43 @@ impl Folded {
         (graph, fates, datives)
     }
 
+    fn read_coordination(
+        fates: &[Fate],
+        center: NodeIndex,
+        ligands: &[Ligand],
+        configuration: Configuration,
+    ) -> Result<Stereo, ExactMatchError> {
+        let Fate::Kept(owner) = fates[center.index()] else {
+            return Err(ExactMatchError::UnsupportedStereo);
+        };
+        let len = ligands.len();
+        if len > 6 {
+            return Err(ExactMatchError::UnsupportedStereo);
+        }
+        let mut sites = [Site::Vacancy; 6];
+        for (slot, &ligand) in sites[..len].iter_mut().zip(ligands) {
+            *slot = match ligand {
+                Ligand::Atom(node) => match fates[node.index()] {
+                    Fate::Kept(atom) => Site::Atom(atom),
+                    Fate::Hydrogen => Site::Hydrogen(owner),
+                    Fate::Twin => Site::Twin,
+                },
+                Ligand::Hydrogen => Site::Hydrogen(owner),
+                Ligand::LonePair => Site::LonePair,
+                Ligand::Vacancy => Site::Vacancy,
+            };
+        }
+        if configuration.coordination_geometry(&sites[..len]).is_none() {
+            return Err(ExactMatchError::UnsupportedStereo);
+        }
+        Ok(Stereo::Coordination {
+            center: owner,
+            ligands: sites,
+            len,
+            configuration,
+        })
+    }
+
     /// The stereo elements in folded-graph atoms, without those that two alike ligands
     /// rule out.
     fn read_stereo(
@@ -379,7 +465,7 @@ impl Folded {
             }),
             Ligand::Hydrogen => Ok(Site::Hydrogen(owner)),
             Ligand::LonePair => Ok(Site::LonePair),
-            Ligand::Vacancy => Err(ExactMatchError::UnsupportedStereo),
+            Ligand::Vacancy => Ok(Site::Vacancy),
         };
         // tag 1 is @, 2 is @@; `owners` are the atoms the ligands are on
         let parity = |center: NodeIndex, ligands: &[Ligand], owners: [usize; 4], tag: u8| {
@@ -402,15 +488,26 @@ impl Folded {
         };
         let mut stereo = Vec::new();
         for center in molecule.atom_stereo() {
-            let Configuration::Tetrahedral(tag) = center.configuration else {
-                return Err(ExactMatchError::UnsupportedStereo);
-            };
-            stereo.push(parity(
-                center.center,
-                &center.ligands,
-                [atom(center.center)?; 4],
-                tag,
-            )?);
+            match center.configuration {
+                Configuration::Tetrahedral(tag) => {
+                    stereo.push(parity(
+                        center.center,
+                        &center.ligands,
+                        [atom(center.center)?; 4],
+                        tag,
+                    )?);
+                }
+                Configuration::SquarePlanar(_)
+                | Configuration::TrigonalBipyramidal(_)
+                | Configuration::Octahedral(_) => {
+                    stereo.push(Self::read_coordination(
+                        fates,
+                        center.center,
+                        &center.ligands,
+                        center.configuration,
+                    )?);
+                }
+            }
         }
         for allene in molecule.allene_stereo() {
             let terminal = |end: Option<&NodeIndex>| end.map(|node| fates[node.index()]);
@@ -445,6 +542,12 @@ impl Folded {
             Stereo::Parity { ligands, .. } => {
                 (0..4).all(|i| (i + 1..4).all(|j| ligands[i] != ligands[j]))
             }
+            Stereo::Coordination {
+                ligands,
+                len,
+                configuration,
+                ..
+            } => !configuration.all_coordination_trivial(&ligands[..*len]),
             Stereo::DoubleBond { ends, .. } => ends.iter().all(|&end| {
                 let key = &graph[GraphIndex::new(end)];
                 key.hydrogens < 2 && key.twins.is_empty()
@@ -490,25 +593,76 @@ impl Folded {
         if self.stereo.is_empty() {
             return Ok(fake);
         }
+        let has_coordination = self
+            .stereo
+            .iter()
+            .any(|element| matches!(element, Stereo::Coordination { .. }));
+        let mut reachable = if has_coordination {
+            vec![0u32; self.stereo.len()]
+        } else {
+            Vec::new()
+        };
         any_mapping(self, self, |mapping| {
-            for (i, element) in self.stereo.iter().enumerate() {
-                if fake[i]
-                    || element.anchor(|atom| mapping[atom]) != element.anchor(|atom| atom)
-                    || element.agrees(mapping, element)
-                {
-                    continue;
-                }
-                fake[i] = self.stereo.iter().enumerate().all(|(j, other)| {
-                    j == i
+            let others_agree = |skip: usize| {
+                self.stereo.iter().enumerate().all(|(j, other)| {
+                    j == skip
                         || self
                             .anchors
                             .get(&other.anchor(|atom| mapping[atom]))
                             .is_some_and(|&k| other.agrees(mapping, &self.stereo[k]))
-                });
+                })
+            };
+            for (i, element) in self.stereo.iter().enumerate() {
+                if fake[i] || element.anchor(|atom| mapping[atom]) != element.anchor(|atom| atom) {
+                    continue;
+                }
+                match element {
+                    Stereo::Coordination {
+                        ligands,
+                        len,
+                        configuration,
+                        ..
+                    } => {
+                        if !others_agree(i) {
+                            continue;
+                        }
+                        let mut mapped = [Site::Vacancy; 6];
+                        for (slot, site) in mapped[..*len].iter_mut().zip(&ligands[..*len]) {
+                            *slot = site.mapped(mapping);
+                        }
+                        let mapped_geo = configuration.coordination_geometry(&mapped[..*len]);
+                        for variant in 0..configuration.coordination_variant_count() {
+                            if (reachable[i] & (1u32 << variant)) == 0
+                                && configuration
+                                    .with_coordination_number(variant + 1)
+                                    .and_then(|cfg| cfg.coordination_geometry(&ligands[..*len]))
+                                    == mapped_geo
+                            {
+                                reachable[i] |= 1u32 << variant;
+                            }
+                        }
+                    }
+                    _ => {
+                        if !element.agrees(mapping, element) && others_agree(i) {
+                            fake[i] = true;
+                        }
+                    }
+                }
             }
             // every symmetry may mark another element
             Ok(false)
         })?;
+        if has_coordination {
+            for (i, element) in self.stereo.iter().enumerate() {
+                if let Stereo::Coordination { configuration, .. } = element {
+                    let count = configuration.coordination_variant_count();
+                    let all_mask = u32::MAX >> (32 - u32::from(count));
+                    if reachable[i] == all_mask {
+                        fake[i] = true;
+                    }
+                }
+            }
+        }
         Ok(fake)
     }
 }
