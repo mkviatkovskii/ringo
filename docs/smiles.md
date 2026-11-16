@@ -46,11 +46,11 @@ connecting ring bond aromatic. Explicit single bonds in biphenylene remain singl
 a regression test checks the two single links and twelve aromatic ring bonds.
 A cycle written entirely with aromatic bonds can survive even if a shorter path
 through a fused ring hides it from ring perception.
-Ring perception considers a shortest ring from both ends of each cyclic bond,
-reuses BFS buffers, and excludes acyclic and dative bonds during traversal. This
-keeps the candidate count bounded by twice the bond count rather than enumerating
-all shortest paths. Selection among more extensive shortest-ring ties remains a
-heuristic; full corpus aromaticity/order-independence checks are still pending.
+Ring perception considers tied shortest rings for each cyclic bond and excludes
+acyclic and dative bonds during traversal. If a bond has more than 16 tied paths,
+it keeps one representative from each end to bound work in large macrocycles.
+In mixed aromatic and Kekulé notation, an explicitly configured double bond
+can remain double beside written aromatic bonds.
 
 ## Atom maps and classes
 

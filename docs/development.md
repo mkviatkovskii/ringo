@@ -56,3 +56,5 @@ indexes to include previously rejected SP/AL-tagged records. Aromaticity percept
 no longer counts a neutral O/S bridge in a ring of nine or more atoms as a π donor.
 Rebuild indexes: Kekulé-written macrocycles with such bridges change fingerprints,
 and records such as CHEMBL2004566 are now accepted.
+Rebuild indexes when upgrading to the revised handling of tied shortest rings.
+The change can affect perceived bond orders, fingerprints, and exact search keys.
