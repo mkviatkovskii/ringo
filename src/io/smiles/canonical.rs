@@ -1,11 +1,10 @@
 //! Deterministic individualization/refinement for canonical SMILES.
 //!
-//! This is the graph-ranking stage of #63. Stereo marks are preserved by the writer;
-//! perception of impossible stereo and stereo-aware partition refinement are pending.
+//! Stereo participates in refinement once the current colors distinguish its ligands.
 use super::writer::{write, WriteError};
 use crate::model::bond::Bond;
 use crate::model::molecule::Molecule;
-use crate::model::stereo::{Configuration, Ligand};
+use crate::model::stereo::{Configuration, DoubleBondStereo, Ligand};
 use petgraph::algo::kosaraju_scc;
 use petgraph::stable_graph::NodeIndex;
 use petgraph::visit::{EdgeIndexable, EdgeRef, IntoEdgeReferences, NodeIndexable};
@@ -181,9 +180,106 @@ struct Search<'a> {
     symmetries: Vec<Vec<usize>>,
 }
 
+#[derive(PartialEq, Eq, PartialOrd, Ord)]
+enum LigandColor {
+    Hydrogen,
+    LonePair,
+    Vacancy,
+    Atom(usize),
+}
+
+#[derive(PartialEq, Eq, PartialOrd, Ord)]
+enum StereoColor {
+    Tetrahedral(Option<bool>),
+    Allene(Option<bool>),
+    DoubleBond(usize, Option<bool>),
+}
+
+// A tie cannot supply a parity until later refinement distinguishes the ligands.
+fn color_parity(sites: &[LigandColor]) -> Option<bool> {
+    let mut odd = false;
+    for (i, site) in sites.iter().enumerate() {
+        for other in &sites[..i] {
+            if other == site {
+                return None;
+            }
+            odd ^= other > site;
+        }
+    }
+    Some(odd)
+}
+
 impl Search<'_> {
+    fn stereo_colors(&self, colors: &[usize]) -> Vec<Vec<StereoColor>> {
+        let molecule = self.molecule;
+        if molecule.stereo.is_empty()
+            && molecule.allene_stereo.is_empty()
+            && molecule.bond_stereo.is_empty()
+        {
+            return Vec::new();
+        }
+        let ligand_color = |ligand| match ligand {
+            Ligand::Hydrogen => LigandColor::Hydrogen,
+            Ligand::LonePair => LigandColor::LonePair,
+            Ligand::Vacancy => LigandColor::Vacancy,
+            Ligand::Atom(node) => LigandColor::Atom(colors[node.index()]),
+        };
+        let mut result: Vec<Vec<StereoColor>> = (0..colors.len()).map(|_| Vec::new()).collect();
+        for stereo in &molecule.stereo {
+            if let Configuration::Tetrahedral(n) = stereo.configuration {
+                let sites: Vec<_> = stereo.ligands.iter().copied().map(ligand_color).collect();
+                let parity = color_parity(&sites).map(|odd| odd ^ (n == 1));
+                result[stereo.center.index()].push(StereoColor::Tetrahedral(parity));
+            }
+        }
+        for stereo in &molecule.allene_stereo {
+            let sites = stereo.ligands.map(ligand_color);
+            // Reversing the axis exchanges two pairs, which leaves parity unchanged.
+            let parity = color_parity(&sites[..2])
+                .zip(color_parity(&sites[2..]))
+                .map(|(a, b)| a ^ b ^ (stereo.permutation == 1));
+            result[stereo.center.index()].push(StereoColor::Allene(parity));
+        }
+        for stereo in &molecule.bond_stereo {
+            let parity = self
+                .double_bond_flip(stereo, 0, colors)
+                .zip(self.double_bond_flip(stereo, 1, colors))
+                .map(|(a, b)| a ^ b ^ stereo.same_side);
+            for side in [0, 1] {
+                result[stereo.ends[side].index()].push(StereoColor::DoubleBond(
+                    colors[stereo.ends[1 - side].index()],
+                    parity,
+                ));
+            }
+        }
+        for stereo in &mut result {
+            stereo.sort_unstable();
+        }
+        result
+    }
+
+    fn double_bond_flip(
+        &self,
+        stereo: &DoubleBondStereo,
+        side: usize,
+        colors: &[usize],
+    ) -> Option<bool> {
+        let reference = stereo.references[side];
+        let mut alternatives = self
+            .molecule
+            .graph
+            .neighbors(stereo.ends[side])
+            .filter(|&node| node != reference && node != stereo.ends[1 - side]);
+        let Some(other) = alternatives.next() else {
+            return Some(false);
+        };
+        let (reference, other) = (colors[reference.index()], colors[other.index()]);
+        (alternatives.next().is_none() && reference != other).then_some(reference > other)
+    }
+
     fn refine(&self, mut colors: Vec<usize>) -> Vec<usize> {
         loop {
+            let stereo = self.stereo_colors(&colors);
             let keys: Vec<_> = self
                 .nodes
                 .iter()
@@ -206,7 +302,8 @@ impl Search<'_> {
                         })
                         .collect();
                     neighbours.sort_unstable();
-                    (colors[node.index()], neighbours)
+                    let stereo = stereo.get(node.index()).map_or(&[][..], Vec::as_slice);
+                    (colors[node.index()], neighbours, stereo)
                 })
                 .collect();
             let next = compress(&self.nodes, &keys, colors.len());
@@ -351,6 +448,36 @@ mod tests {
             assert_eq!(canonical(&canonical(a)), canonical(a));
         }
     }
+
+    #[test]
+    fn canonicalizing_preserves_unspecified_double_bond_stereo() {
+        // SureChEMBL SCHEMBL12328173 has a required slash next to an unspecified double bond.
+        let input = r"CC1=C/C(=C(/C#N)C(=O)O)C=C(/C=C/c2ccc(N(c3ccccc3)c3ccc(-c4ccc(N(c5ccccc5)c5ccc(/C=C/C6=C/C(=C(\C#N)C(=O)O)C=C(C)O6)cc5)cc4)cc3)cc2)O1";
+        let molecule = parse_molecule(input).unwrap().1;
+        let output = canonical_smiles(&molecule).unwrap();
+        let reread = parse_molecule(&output).unwrap().1;
+        assert_eq!(reread.double_bond_stereo().len(), 5);
+        assert_eq!(molecule.exact_match(&reread), Ok(true));
+        assert_eq!(canonical_smiles(&reread), Ok(output));
+    }
+
+    #[test]
+    fn opposite_configurations_split_otherwise_identical_branches() {
+        for input in [
+            "F[C@H](Cl)[C@H](Br)[C@@H](F)Cl",
+            "FC=[C@]=C(Cl)OC(Cl)=[C@@]=CF",
+            "F/C=C/O/C=C\\F",
+        ] {
+            let molecule = parse_molecule(input).unwrap().1;
+            let expected = canonical_smiles_with_limit(&molecule, 1)
+                .unwrap_or_else(|error| panic!("{input}: {error:?}"));
+            let ranks: Vec<_> = (0..molecule.count_atoms()).rev().collect();
+            let reversed = super::super::writer::write_smiles_ranked(&molecule, &ranks).unwrap();
+            assert_eq!(canonical(&reversed), expected, "{input} -> {reversed}");
+            assert_eq!(canonical(&expected), expected, "{input}");
+        }
+    }
+
     #[test]
     fn shuffled_writer_orders() {
         for input in [

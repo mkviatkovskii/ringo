@@ -263,6 +263,30 @@ impl<'a> Writer<'a> {
                 edge.source()
             }
         };
+        let lowercase = &self.lowercase;
+        let candidates = |end: NodeIndex, partner: NodeIndex| {
+            molecule.graph.edges(end).filter(move |&edge| {
+                let other = other_end(edge, end);
+                let markable = match edge.weight().order {
+                    BondOrder::Single => true,
+                    // A slash between two lowercase atoms reads back as aromatic.
+                    BondOrder::Aromatic => lowercase[end.index()] && lowercase[other.index()],
+                    _ => false,
+                };
+                other != partner && markable
+            })
+        };
+        // Reserve marks with no alternative so earlier choices don't conflict with them.
+        let mut required = vec![false; edges];
+        for s in &stereo {
+            for side in [0, 1] {
+                let mut options = candidates(s.ends[side], s.ends[1 - side]);
+                let first = options.next().ok_or(WriteError::DoubleBondStereo)?;
+                if options.next().is_none() {
+                    required[first.id().index()] = true;
+                }
+            }
+        }
         let configured_end =
             |node: NodeIndex| molecule.bond_stereo.iter().any(|s| s.ends.contains(&node));
         let unconfigured = |node: NodeIndex| {
@@ -271,8 +295,8 @@ impl<'a> Writer<'a> {
                     && !molecule.bond_stereo.iter().any(|s| s.bond == edge.id())
             })
         };
-        // a mark at `node` and one already at the far end of an unconfigured double bond from
-        // it would configure that bond
+        // A mark at node and one already chosen or required at the other end would
+        // accidentally configure this double bond.
         let completes = |marked: &[bool], node: NodeIndex| {
             molecule.graph.edges(node).any(|double| {
                 double.weight().order == BondOrder::Double
@@ -280,7 +304,7 @@ impl<'a> Writer<'a> {
                     && molecule
                         .graph
                         .edges(other_end(double, node))
-                        .any(|edge| edge.id() != double.id() && marked[edge.id().index()])
+                        .any(|edge| required[edge.id().index()] || marked[edge.id().index()])
             })
         };
         // one mark at each end: a bond already marked, else one that configures no other
@@ -294,21 +318,7 @@ impl<'a> Writer<'a> {
             sides.sort_by_key(|&side| self.position[s.ends[side].index()]);
             for side in sides {
                 let (end, partner) = (s.ends[side], s.ends[1 - side]);
-                let best = molecule
-                    .graph
-                    .edges(end)
-                    .filter(|&edge| {
-                        let other = other_end(edge, end);
-                        let markable = match edge.weight().order {
-                            BondOrder::Single => true,
-                            // `/` between two lowercase atoms reads back as aromatic
-                            BondOrder::Aromatic => {
-                                self.lowercase[end.index()] && self.lowercase[other.index()]
-                            }
-                            _ => false,
-                        };
-                        other != partner && markable
-                    })
+                let best = candidates(end, partner)
                     .min_by_key(|&edge| {
                         let other = other_end(edge, end);
                         (
