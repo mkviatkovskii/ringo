@@ -2,12 +2,15 @@
 //!
 //! Stereo participates in refinement once the current colors distinguish its ligands.
 use super::writer::{write, write_smiles, write_smiles_ranked, DoubleBondStereoPolicy, WriteError};
-use crate::model::bond::Bond;
+use crate::model::bond::{Bond, BondOrder};
 use crate::model::molecule::Molecule;
-use crate::model::stereo::{Configuration, CoordinationGeometry, DoubleBondStereo, Ligand};
+use crate::model::stereo::{
+    AlleneStereo, AtomStereo, Configuration, CoordinationGeometry, DoubleBondStereo, Ligand,
+};
 use petgraph::algo::kosaraju_scc;
 use petgraph::stable_graph::NodeIndex;
 use petgraph::visit::{EdgeIndexable, EdgeRef, IntoEdgeReferences, NodeIndexable};
+use std::borrow::Cow;
 use std::collections::BTreeMap;
 
 /// Maximum search nodes used by the default canonicalizer.
@@ -20,10 +23,9 @@ pub enum CanonicalError {
     Write(WriteError),
 }
 
-/// Canonicalizes the represented graph, preserving its stereo annotations.
-///
-/// This does not yet remove chemically impossible stereo annotations. The result
-/// is Ringo's canonical spelling, not necessarily another toolkit's spelling.
+/// Canonicalizes the represented graph, folding plain explicit `[H]` atoms into H counts
+/// and dropping non-stereogenic stereo annotations. The result is Ringo's canonical spelling,
+/// not necessarily another toolkit's spelling.
 pub fn canonical_smiles(molecule: &Molecule) -> Result<String, CanonicalError> {
     canonical_smiles_with_limit(molecule, DEFAULT_SEARCH_LIMIT)
 }
@@ -170,6 +172,64 @@ fn canonical_component_with(
     remaining: &mut usize,
     double_bond_stereo: DoubleBondStereoPolicy,
 ) -> Result<String, CanonicalError> {
+    let mut current = drop_trivial_stereo(fold_explicit_hydrogens(molecule));
+    loop {
+        let (tied_atom, tied_allene, tied_bond) = tied_stereo_indices(&current);
+        if tied_atom.is_empty() && tied_allene.is_empty() && tied_bond.is_empty() {
+            return canonical_component_solving(&current, remaining, double_bond_stereo);
+        }
+        let baseline = canonical_component_solving(&current, remaining, double_bond_stereo)?;
+        let mut fake_atom = vec![false; current.stereo.len()];
+        let mut fake_allene = vec![false; current.allene_stereo.len()];
+        let mut fake_bond = vec![false; current.bond_stereo.len()];
+        let mut dropped_any = false;
+
+        for i in tied_atom {
+            if atom_stereo_is_fake(&current, i, &baseline, remaining, double_bond_stereo)? {
+                fake_atom[i] = true;
+                dropped_any = true;
+            }
+        }
+        for i in tied_allene {
+            let mut flipped = current.as_ref().clone();
+            flipped.allene_stereo[i].permutation = 3 - flipped.allene_stereo[i].permutation;
+            if canonical_component_solving(&flipped, remaining, double_bond_stereo)? == baseline {
+                fake_allene[i] = true;
+                dropped_any = true;
+            }
+        }
+        for i in tied_bond {
+            let mut flipped = current.as_ref().clone();
+            flipped.bond_stereo[i].same_side = !flipped.bond_stereo[i].same_side;
+            if canonical_component_solving(&flipped, remaining, double_bond_stereo)? == baseline {
+                fake_bond[i] = true;
+                dropped_any = true;
+            }
+        }
+        if !dropped_any {
+            return Ok(baseline);
+        }
+        let owned = current.to_mut();
+        retain_marked(&mut owned.stereo, &fake_atom);
+        retain_marked(&mut owned.allene_stereo, &fake_allene);
+        retain_marked(&mut owned.bond_stereo, &fake_bond);
+    }
+}
+
+fn retain_marked<T>(items: &mut Vec<T>, drop: &[bool]) {
+    let mut i = 0;
+    items.retain(|_| {
+        let keep = !drop[i];
+        i += 1;
+        keep
+    });
+}
+
+fn canonical_component_solving(
+    molecule: &Molecule,
+    remaining: &mut usize,
+    double_bond_stereo: DoubleBondStereoPolicy,
+) -> Result<String, CanonicalError> {
     match canonical_component(molecule, remaining) {
         Ok(smiles) => Ok(smiles),
         Err(CanonicalError::Write(WriteError::DoubleBondStereo))
@@ -178,6 +238,308 @@ fn canonical_component_with(
             canonical_component_tolerating_double_bonds(molecule, remaining)
         }
         Err(error) => Err(error),
+    }
+}
+
+fn foldable_hydrogen_parent(molecule: &Molecule, node: NodeIndex) -> Option<NodeIndex> {
+    let atom = &molecule.graph[node];
+    if atom.element.atomic_number != 1
+        || atom.isotope != 0
+        || atom.charge != 0
+        || atom.atom_class != 0
+        || atom.hs + atom.implicit_hs != 0
+    {
+        return None;
+    }
+    let mut edges = molecule.graph.edges(node);
+    let (Some(edge), None) = (edges.next(), edges.next()) else {
+        return None;
+    };
+    if edge.weight().order != BondOrder::Single {
+        return None;
+    }
+    let parent = if edge.source() == node {
+        edge.target()
+    } else {
+        edge.source()
+    };
+    (molecule.graph[parent].element.atomic_number != 1).then_some(parent)
+}
+
+fn fold_explicit_hydrogens(molecule: &Molecule) -> Cow<'_, Molecule> {
+    let bound = molecule.graph.node_bound();
+    let mut parent_of_h = vec![None; bound];
+    let mut added_hs = vec![0u8; bound];
+    let mut any_folded = false;
+    for node in molecule.graph.node_indices() {
+        if let Some(parent) = foldable_hydrogen_parent(molecule, node) {
+            let existing = molecule.graph[parent]
+                .hs
+                .saturating_add(added_hs[parent.index()]);
+            if existing < u8::MAX {
+                parent_of_h[node.index()] = Some(parent);
+                added_hs[parent.index()] += 1;
+                any_folded = true;
+            }
+        }
+    }
+    if !any_folded {
+        return Cow::Borrowed(molecule);
+    }
+
+    let mut folded = Molecule::new();
+    let mut node_map = vec![None; bound];
+    for old in molecule.graph.node_indices() {
+        if parent_of_h[old.index()].is_some() {
+            continue;
+        }
+        let mut atom = molecule.graph[old].clone();
+        atom.hs = atom.hs.saturating_add(added_hs[old.index()]);
+        node_map[old.index()] = Some(folded.add_atom(atom));
+        folded
+            .input_aromatic
+            .push(molecule.input_aromatic[old.index()]);
+    }
+    let mut edge_map = vec![None; molecule.graph.edge_bound()];
+    for edge in molecule.graph.edge_references() {
+        let (Some(a), Some(b)) = (
+            node_map[edge.source().index()],
+            node_map[edge.target().index()],
+        ) else {
+            continue;
+        };
+        let weight = edge.weight();
+        edge_map[edge.id().index()] = Some(folded.add_bond(
+            a,
+            b,
+            Bond {
+                order: weight.order,
+                donor: weight.donor.and_then(|d| node_map[d.index()]),
+            },
+        ));
+        folded
+            .input_orders
+            .push(molecule.input_orders[edge.id().index()]);
+    }
+    fold_stereo(molecule, &mut folded, &node_map, &edge_map);
+    Cow::Owned(folded)
+}
+
+fn fold_stereo(
+    molecule: &Molecule,
+    folded: &mut Molecule,
+    node_map: &[Option<NodeIndex>],
+    edge_map: &[Option<petgraph::stable_graph::EdgeIndex>],
+) {
+    let map_ligand = |ligand: Ligand| match ligand {
+        Ligand::Atom(atom) => node_map[atom.index()].map_or(Ligand::Hydrogen, Ligand::Atom),
+        other => other,
+    };
+    for stereo in &molecule.stereo {
+        let Some(center) = node_map[stereo.center.index()] else {
+            continue;
+        };
+        folded.stereo.push(AtomStereo {
+            center,
+            ligands: stereo.ligands.iter().copied().map(map_ligand).collect(),
+            configuration: stereo.configuration,
+        });
+    }
+    for stereo in &molecule.allene_stereo {
+        let Some(center) = node_map[stereo.center.index()] else {
+            continue;
+        };
+        let Some(axis) = stereo
+            .axis
+            .iter()
+            .map(|atom| node_map[atom.index()])
+            .collect::<Option<Vec<_>>>()
+        else {
+            continue;
+        };
+        folded.allene_stereo.push(AlleneStereo {
+            center,
+            axis,
+            ligands: stereo.ligands.map(map_ligand),
+            permutation: stereo.permutation,
+        });
+    }
+    for stereo in &molecule.bond_stereo {
+        let Some(bond) = edge_map[stereo.bond.index()] else {
+            continue;
+        };
+        let (Some(e0), Some(e1)) = (
+            node_map[stereo.ends[0].index()],
+            node_map[stereo.ends[1].index()],
+        ) else {
+            continue;
+        };
+        let ends = [e0, e1];
+        let mut references = [NodeIndex::end(); 2];
+        let mut same_side = stereo.same_side;
+        let mut keep = true;
+        for side in [0, 1] {
+            let end = ends[side];
+            let atom = &folded.graph[end];
+            if u16::from(atom.hs) + u16::from(atom.implicit_hs) >= 2 {
+                keep = false;
+                break;
+            }
+            if let Some(kept) = node_map[stereo.references[side].index()] {
+                references[side] = kept;
+            } else {
+                let partner = ends[1 - side];
+                let mut others = folded.graph.neighbors(end).filter(|&n| n != partner);
+                if let (Some(alt), None) = (others.next(), others.next()) {
+                    references[side] = alt;
+                    same_side = !same_side;
+                } else {
+                    keep = false;
+                    break;
+                }
+            }
+        }
+        if keep {
+            folded.bond_stereo.push(DoubleBondStereo {
+                bond,
+                ends,
+                references,
+                same_side,
+            });
+        }
+    }
+}
+
+fn has_duplicate_ligands(ligands: &[Ligand]) -> bool {
+    (0..ligands.len()).any(|i| (i + 1..ligands.len()).any(|j| ligands[i] == ligands[j]))
+}
+
+fn drop_trivial_stereo(mut molecule: Cow<'_, Molecule>) -> Cow<'_, Molecule> {
+    let drop_atom: Vec<bool> = molecule
+        .stereo
+        .iter()
+        .map(|s| match s.configuration {
+            Configuration::Tetrahedral(_) => has_duplicate_ligands(&s.ligands),
+            Configuration::SquarePlanar(_)
+            | Configuration::TrigonalBipyramidal(_)
+            | Configuration::Octahedral(_) => s.configuration.all_coordination_trivial(&s.ligands),
+        })
+        .collect();
+    let drop_allene: Vec<bool> = molecule
+        .allene_stereo
+        .iter()
+        .map(|s| s.ligands[0] == s.ligands[1] || s.ligands[2] == s.ligands[3])
+        .collect();
+    let drop_bond: Vec<bool> = molecule
+        .bond_stereo
+        .iter()
+        .map(|s| {
+            s.ends.iter().any(|&end| {
+                let atom = &molecule.graph[end];
+                u16::from(atom.hs) + u16::from(atom.implicit_hs) >= 2
+            })
+        })
+        .collect();
+    if drop_atom.iter().any(|&d| d)
+        || drop_allene.iter().any(|&d| d)
+        || drop_bond.iter().any(|&d| d)
+    {
+        let owned = molecule.to_mut();
+        retain_marked(&mut owned.stereo, &drop_atom);
+        retain_marked(&mut owned.allene_stereo, &drop_allene);
+        retain_marked(&mut owned.bond_stereo, &drop_bond);
+    }
+    molecule
+}
+
+fn tied_stereo_indices(molecule: &Molecule) -> (Vec<usize>, Vec<usize>, Vec<usize>) {
+    if molecule.stereo.is_empty()
+        && molecule.allene_stereo.is_empty()
+        && molecule.bond_stereo.is_empty()
+    {
+        return (Vec::new(), Vec::new(), Vec::new());
+    }
+    let (nodes, colors) = initial_colors(molecule);
+    let search = Search {
+        molecule,
+        nodes,
+        remaining: 0,
+        leaves: BTreeMap::new(),
+        symmetries: Vec::new(),
+    };
+    let refined = search.refine(colors);
+    let ligand_color = |ligand| match ligand {
+        Ligand::Hydrogen => LigandColor::Hydrogen,
+        Ligand::LonePair => LigandColor::LonePair,
+        Ligand::Vacancy => LigandColor::Vacancy,
+        Ligand::Atom(node) => LigandColor::Atom(refined[node.index()]),
+    };
+    let atom_tied: Vec<usize> = molecule
+        .stereo
+        .iter()
+        .enumerate()
+        .filter(|(_, s)| {
+            let sites: Vec<_> = s.ligands.iter().copied().map(ligand_color).collect();
+            (0..sites.len()).any(|i| (i + 1..sites.len()).any(|j| sites[i] == sites[j]))
+        })
+        .map(|(i, _)| i)
+        .collect();
+    let allene_tied: Vec<usize> = molecule
+        .allene_stereo
+        .iter()
+        .enumerate()
+        .filter(|(_, s)| {
+            let sites = s.ligands.map(ligand_color);
+            color_parity(&sites[..2]).is_none() || color_parity(&sites[2..]).is_none()
+        })
+        .map(|(i, _)| i)
+        .collect();
+    let bond_tied: Vec<usize> = molecule
+        .bond_stereo
+        .iter()
+        .enumerate()
+        .filter(|(_, s)| {
+            search.double_bond_flip(s, 0, &refined).is_none()
+                || search.double_bond_flip(s, 1, &refined).is_none()
+        })
+        .map(|(i, _)| i)
+        .collect();
+    (atom_tied, allene_tied, bond_tied)
+}
+
+fn atom_stereo_is_fake(
+    molecule: &Molecule,
+    index: usize,
+    baseline: &str,
+    remaining: &mut usize,
+    double_bond_stereo: DoubleBondStereoPolicy,
+) -> Result<bool, CanonicalError> {
+    let config = molecule.stereo[index].configuration;
+    match config {
+        Configuration::Tetrahedral(tag) => {
+            let mut flipped = molecule.clone();
+            flipped.stereo[index].configuration = Configuration::Tetrahedral(3 - tag);
+            Ok(canonical_component_solving(&flipped, remaining, double_bond_stereo)? == baseline)
+        }
+        Configuration::SquarePlanar(_)
+        | Configuration::TrigonalBipyramidal(_)
+        | Configuration::Octahedral(_) => {
+            for variant in 1..=config.coordination_variant_count() {
+                let Some(next) = config.with_coordination_number(variant) else {
+                    continue;
+                };
+                if next == config {
+                    continue;
+                }
+                let mut flipped = molecule.clone();
+                flipped.stereo[index].configuration = next;
+                if canonical_component_solving(&flipped, remaining, double_bond_stereo)? != baseline
+                {
+                    return Ok(false);
+                }
+            }
+            Ok(true)
+        }
     }
 }
 
@@ -871,5 +1233,84 @@ mod tests {
             .unwrap(),
             format!("{tolerated}.O")
         );
+    }
+
+    #[test]
+    fn explicit_hydrogens_canonicalize_to_h_counts() {
+        for (a, b) in [
+            ("C", "[H]C([H])([H])[H]"),
+            ("CO", "[H]OC"),
+            ("[C@H](F)(Cl)Br", "[C@]([H])(F)(Cl)Br"),
+            ("F[C@H](Cl)Br", "F[C@]([H])(Cl)Br"),
+            ("[nH]1cccc1", "[n]([H])1cccc1"),
+            ("F/C=C\\F", "[H]/C(F)=C/F"),
+            ("OC=[C@]=CF", "OC([H])=[C@AL1]=C([H])F"),
+            ("C[Pt@SP1H](Cl)F", "C[Pt@SP1]([H])(Cl)F"),
+        ] {
+            let out_a = canonical(a);
+            let out_b = canonical(b);
+            assert_eq!(out_a, out_b, "{a} vs {b}");
+            assert_eq!(canonical(&out_a), out_a, "{a}");
+        }
+        assert_ne!(
+            canonical("[2H][C@](F)(Cl)Br"),
+            canonical("[H][C@](F)(Cl)Br")
+        );
+        assert_ne!(canonical("[2H]C"), canonical("[H]C"));
+        assert_eq!(canonical("[H][H]"), "[H][H]");
+    }
+
+    #[test]
+    fn fake_and_interacting_stereo_are_normalized() {
+        for (a, b) in [
+            ("C[C@H](C)O", "CC(C)O"),
+            ("C[C@H](C)O", "C[C@@H](C)O"),
+            ("[H][C@]([H])(F)Cl", "FCCl"),
+            ("C/C=C(/C)C", "CC=C(C)C"),
+            ("[H]/C([H])=C/F", "C=CF"),
+            ("C[C@@H](O)[C@H](O)[C@@H](C)O", "C[C@@H](O)C(O)[C@@H](C)O"),
+            (
+                "C[C@@H](O)[C@H](O)[C@@H](C)O",
+                "C[C@@H](O)[C@@H](O)[C@@H](C)O",
+            ),
+            ("C[C@H]1CCC(C)CC1", "CC1CCC(C)CC1"),
+            (
+                "F[C@H](C1CCC(C)CC1)C2CC[C@H](C)CC2",
+                "FC(C1CCC(C)CC1)C2CCC(C)CC2",
+            ),
+            (
+                "F[C@H]([NH2]->[Cu])[NH2]->[Cu]",
+                "FC([NH2]->[Cu])[NH2]->[Cu]",
+            ),
+            ("CC(C)=[C@]=CF", "CC(C)=C=CF"),
+            ("C=[C@]=C", "C=C=C"),
+            ("[H]C([H])=[C@]=C([H])F", "C=C=CF"),
+            ("F[Pt@SP1](C)(C)C", "F[Pt](C)(C)C"),
+            ("F[Pt@SP1H3]", "F[PtH3]"),
+        ] {
+            let out_a = canonical(a);
+            let out_b = canonical(b);
+            assert_eq!(out_a, out_b, "{a} vs {b}");
+            assert_eq!(canonical(&out_a), out_a, "{a}");
+        }
+
+        for (a, b) in [
+            ("F[Pt@SP1H2]Cl", "F[Pt@SP3H2]Cl"),
+            ("C[C@H]1CC[C@H](C)CC1", "C[C@H]1CC[C@@H](C)CC1"),
+            ("C[C@H]1CC[C@H](C)CC1", "C[C@H]1CCC(C)CC1"),
+            (
+                "C[C@@H](O)[C@H](O)[C@H](C)O",
+                "C[C@@H](O)[C@@H](O)[C@H](C)O",
+            ),
+            ("C[C@@H](O)[C@H](O)[C@H](C)O", "C[C@@H](O)C(O)[C@H](C)O"),
+            (
+                "F[C@H]([NH2]->[Cu])[NH2]<-[Cu]",
+                "F[C@@H]([NH2]->[Cu])[NH2]<-[Cu]",
+            ),
+            ("F[C@H](Cl)Br", "F[C@@]([H])(Cl)Br"),
+            ("C[Pt@SP1](Cl)(Cl)N", "C[Pt@SP3](Cl)(Cl)N"),
+        ] {
+            assert_ne!(canonical(a), canonical(b), "{a} vs {b}");
+        }
     }
 }

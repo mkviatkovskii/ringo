@@ -262,9 +262,10 @@ atom classes, aromaticity, bond orders, dative bonds and stereo.
   unrepresentable double-bond configurations while keeping valid ones.
 
 The graph-ranking stage of [#63](https://github.com/mkviatkovskii/ringo/issues/63)
-is available through `canonical::canonical_smiles(&molecule)`. It sorts atom
-invariants, refines neighbour partitions and searches unresolved ties, retaining
-the smallest written result. Tetrahedral, square-planar, trigonal-bipyramidal,
+is available through `canonical::canonical_smiles(&molecule)`. It folds plain explicit
+`[H]` atoms into parent hydrogen counts, drops non-stereogenic stereo annotations iteratively,
+sorts atom invariants, refines neighbour partitions with active stereo, and searches unresolved
+ties retaining the smallest written result. Tetrahedral, square-planar, trigonal-bipyramidal,
 octahedral, allene and double-bond configurations participate in refinement and
 can distinguish otherwise identical branches. Matching leaf outputs reveal
 automorphisms; their generators prune equivalent branches only when they preserve
@@ -281,11 +282,15 @@ unsuccessful if any record failed. `--search-limit` sets the maximum
 search nodes per molecule (default 100,000). Exhaustion returns `SearchLimit`,
 never a provisional result. The library also exposes `canonical_smiles_with_limit`.
 
-This is not yet the complete molecular identity implementation from #63. Stereo
-annotations are preserved and participate in leaf comparison, but stereo-aware
-partition refinement and removal of impossible or interacting stereo marks remain
-unimplemented. Large ChEMBL order-independence, idempotence, RDKit comparison,
-exact-matcher oracle and throughput acceptance runs remain outstanding.
+Replacing the `#58`/`#65` `exact_search` key and VF2 verifier with canonical-order checks remains
+outstanding before closing [#63](https://github.com/mkviatkovskii/ringo/issues/63). On ChEMBL 37
+(`2,897,805` records), `canonical_smiles` parsed, canonicalized and stayed idempotent on every
+record with zero search-limit errors (including the `49` dendrimers where `#65` hits
+`TooSymmetric`), agreed with the `#65` oracle across all `326,669` comparable colliding-key
+pairs (`0` disagreements), passed 10-order shuffling across a `49,963`-molecule sample plus all
+`49` `TooSymmetric` molecules, and matched RDKit on all `159` RDKit duplicate groups plus `19`
+additional groups with non-stereogenic spiro[3.3]heptane or adamantane `@` marks (`2,897,619`
+vs `2,897,639` distinct SMILES).
 
 ## Known gaps
 
