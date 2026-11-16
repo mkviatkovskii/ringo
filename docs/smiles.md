@@ -51,9 +51,11 @@ acyclic and dative bonds during traversal. If a bond has more than 16 tied paths
 it keeps one representative from each end to bound work in large macrocycles.
 In mixed aromatic and Kekulé notation, an explicitly configured double bond
 can remain double beside written aromatic bonds.
-Atoms with more than one double bond in rings (cumulated cyclic systems such as
-`=C=`, `=[N+]=` or `=S=`) do not donate π electrons in Hückel perception, so
-those rings keep their double bonds and valences.
+Atoms with more than one double bond in rings or both a ring and an exocyclic
+double bond (such as `=C=`, `=S(=O)` or `=[N+]=`) do not donate π electrons in
+Hückel perception, so those rings keep their double bonds and valences.
+Charged carbon (`[c-]`, `[c+]`) and neutral boron only donate 2 or 0 electrons in
+Hückel perception when three-coordinate.
 
 ## Atom maps and classes
 
@@ -204,7 +206,8 @@ written, before normalization. An aromatic atom is one written in lowercase or w
 
 An aromatic atom needs a ring double bond unless it has a written double or triple
 bond (2-pyridone's C=O carbon), or gives a lone pair or an empty p orbital. Neutral
-O/S/Se/Te and N- give a lone pair. Neutral B/N/P/As, charged carbon and S+/Se+/Te+
+O/S/Se/Te and N- with two neighbours or hydrogens give a lone pair; with three,
+S/Se/Te need a ring double bond, as in `Cs1ccccc1`. Neutral B/N/P/As, charged carbon and S+/Se+/Te+
 with three neighbours or hydrogens give a lone pair or an empty p orbital: pyrrole's
 NH, indolizine's bridgehead N, borole's B, `[cH-]`, `[cH+]`, and the S+ of
 `C[s+]1cccc1` or of CHEMBL8982's `n[s+]([O-])n`. With two neighbours they need a
