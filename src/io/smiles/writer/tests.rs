@@ -1,5 +1,5 @@
-use super::{write, write_smiles, WriteError};
-use crate::io::smiles::reader::molecule::parse_molecule;
+use super::{write, write_smiles, write_smiles_with, DoubleBondStereoPolicy, WriteError};
+use crate::io::smiles::reader::molecule::{parse_molecule, parse_molecule_with, DirectionalStereo};
 use crate::model::molecule::Molecule;
 use crate::model::stereo::{Configuration, DoubleBondStereo, Ligand};
 use petgraph::stable_graph::NodeIndex;
@@ -594,4 +594,30 @@ fn aromatic_cycle_survives_a_fused_shortcut() {
     let molecule = parse("Cc1cc2c(C(C)C)c(c1O)O2");
     let ranks = [6, 10, 4, 11, 0, 9, 3, 2, 1, 5, 8, 7];
     check(&molecule, &ranks).unwrap();
+}
+
+#[test]
+fn double_bond_stereo_policy_rejects_or_drops_unrepresentable_bonds() {
+    for smiles in [
+        "C/C=C\\C(/C=C\\C)=C(/C=C\\C)/C(O)=C\\C",
+        "CCCCC[N+]1=C(/C=C/C2=C(/C=C3/N(CCCCOS)c4ccc5cc(Br)ccc5c4C3(C)C)/C(=C/C=C3/N(CCCCS(=O)(=O)O)c4ccc5cc(Br)ccc5c4C3(C)C)c3ccccc32)C(C)(C)c2c1ccc1cc(Br)ccc21",
+    ] {
+        let (_, molecule) =
+            parse_molecule_with(smiles, DirectionalStereo::Tolerate).unwrap();
+        assert_eq!(
+            write_smiles_with(&molecule, DoubleBondStereoPolicy::Reject),
+            Err(WriteError::DoubleBondStereo),
+            "{smiles}"
+        );
+        let written = write_smiles_with(&molecule, DoubleBondStereoPolicy::Tolerate)
+            .unwrap_or_else(|e| panic!("{smiles}: {e:?}"));
+        let (_, reread) = parse_molecule(&written).unwrap_or_else(|e| panic!("{written}: {e:?}"));
+        assert_eq!(reread.count_atoms(), molecule.count_atoms());
+        assert_eq!(reread.count_bonds(), molecule.count_bonds());
+        assert!(
+            !reread.double_bond_stereo().is_empty()
+                && reread.double_bond_stereo().len() < molecule.double_bond_stereo().len(),
+            "{smiles} -> {written}"
+        );
+    }
 }

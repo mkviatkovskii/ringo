@@ -136,8 +136,8 @@ Absence of a stereo record means unspecified stereochemistry. Invalid, incomplet
 unsupported or contradictory specifications produce parsing errors by default. Directional
 specifications that aromaticity normalization cannot preserve are also rejected by default.
 Pass `DirectionalStereo::Tolerate` to `parse_molecule_with` (or `--directional-stereo tolerate`
-on the CLIs) to ignore incomplete, contradictory, or aromaticized `/` and `\` marks while
-retaining valid double-bond configurations.
+or `--tolerate-stereo` on the CLIs) to ignore incomplete, contradictory, or aromaticized `/` and `\`
+marks while retaining valid double-bond configurations.
 The reader does not perceive additional stereocentres. Optional valence validation
 is described below; arithmetic and representation limits are checked independently.
 
@@ -254,8 +254,12 @@ atom classes, aromaticity, bond orders, dative bonds and stereo.
   and allenes. `@SP1`–`@SP3`, `@TB1`–`@TB20`, and `@OH1`–`@OH30` are renumbered for
   any ligand ordering. `/` and `\` are chosen again, then checked against what the
   reader makes of them.
-- A configuration the output can't express is an error, never a different molecule:
-  double-bond configurations that `/` and `\` can't mark in that order.
+- A configuration the output can't express is an error by default, never a different molecule:
+  double-bond configurations that `/` and `\` can't mark in that order. Pass
+  `DoubleBondStereoPolicy::Tolerate` to `write_smiles_with`, `write_smiles_ranked_with`, or
+  `canonical_smiles_with` (or `--double-bond-stereo tolerate` / `--tolerate-stereo` on
+  `ringo-canonical`, or combine policies with `TolerateStereo`) to drop the fewest
+  unrepresentable double-bond configurations while keeping valid ones.
 
 The graph-ranking stage of [#63](https://github.com/mkviatkovskii/ringo/issues/63)
 is available through `canonical::canonical_smiles(&molecule)`. It sorts atom

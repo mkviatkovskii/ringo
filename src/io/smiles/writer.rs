@@ -23,11 +23,29 @@ pub enum WriteError {
     TooManyRings,
 }
 
+/// Policy for double-bond stereo configurations that `/` and `\` cannot express.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, clap::ValueEnum)]
+pub enum DoubleBondStereoPolicy {
+    /// Fail with [`WriteError::DoubleBondStereo`] if any configuration cannot be preserved (default).
+    #[default]
+    Reject,
+    /// Drop unrepresentable double-bond configurations while keeping as many valid ones as possible.
+    Tolerate,
+}
+
 /// Writes `molecule` in reading order: each component starts at its first atom, and each
 /// atom's neighbours follow in reading order.
 pub fn write_smiles(molecule: &Molecule) -> Result<String, WriteError> {
+    write_smiles_with(molecule, DoubleBondStereoPolicy::Reject)
+}
+
+/// Like [`write_smiles`], with an explicit [`DoubleBondStereoPolicy`].
+pub fn write_smiles_with(
+    molecule: &Molecule,
+    double_bond_stereo: DoubleBondStereoPolicy,
+) -> Result<String, WriteError> {
     let ranks: Vec<usize> = (0..molecule.graph.node_bound()).collect();
-    write_smiles_ranked(molecule, &ranks)
+    write_smiles_ranked_with(molecule, &ranks, double_bond_stereo)
 }
 
 /// Writes `molecule` in the order of `ranks`, indexed by node index: each component starts
@@ -35,13 +53,31 @@ pub fn write_smiles(molecule: &Molecule) -> Result<String, WriteError> {
 /// fall back to reading order. Branches come first and the highest-ranked neighbour
 /// continues the chain.
 pub fn write_smiles_ranked(molecule: &Molecule, ranks: &[usize]) -> Result<String, WriteError> {
-    write(molecule, ranks).map(|(smiles, _)| smiles)
+    write_smiles_ranked_with(molecule, ranks, DoubleBondStereoPolicy::Reject)
+}
+
+/// Like [`write_smiles_ranked`], with an explicit [`DoubleBondStereoPolicy`].
+pub fn write_smiles_ranked_with(
+    molecule: &Molecule,
+    ranks: &[usize],
+    double_bond_stereo: DoubleBondStereoPolicy,
+) -> Result<String, WriteError> {
+    write_with(molecule, ranks, double_bond_stereo).map(|(smiles, _)| smiles)
 }
 
 /// The SMILES, and the atoms in the order written.
 pub(crate) fn write(
     molecule: &Molecule,
     ranks: &[usize],
+) -> Result<(String, Vec<NodeIndex>), WriteError> {
+    write_with(molecule, ranks, DoubleBondStereoPolicy::Reject)
+}
+
+/// Like [`write`], with an explicit [`DoubleBondStereoPolicy`].
+pub(crate) fn write_with(
+    molecule: &Molecule,
+    ranks: &[usize],
+    double_bond_stereo: DoubleBondStereoPolicy,
 ) -> Result<(String, Vec<NodeIndex>), WriteError> {
     assert!(
         ranks.len() >= molecule.graph.node_bound(),
@@ -53,7 +89,7 @@ pub(crate) fn write(
     }) {
         return Err(WriteError::AromaticValence);
     }
-    let writer = Writer::new(molecule, ranks)?;
+    let writer = Writer::new(molecule, ranks, double_bond_stereo)?;
     let mut out = String::new();
     writer.write(&mut out)?;
     Ok((out, writer.order))
@@ -141,7 +177,11 @@ struct Writer<'a> {
 }
 
 impl<'a> Writer<'a> {
-    fn new(molecule: &'a Molecule, ranks: &[usize]) -> Result<Writer<'a>, WriteError> {
+    fn new(
+        molecule: &'a Molecule,
+        ranks: &[usize],
+        double_bond_stereo: DoubleBondStereoPolicy,
+    ) -> Result<Writer<'a>, WriteError> {
         let graph = &molecule.graph;
         let bound = graph.node_bound();
         let key = |node: &NodeIndex| (ranks[node.index()], node.index());
@@ -225,7 +265,7 @@ impl<'a> Writer<'a> {
             rings.extend(by_position(&mut openings[index]));
             writer.rings[index] = rings;
         }
-        writer.assign_directions()?;
+        writer.assign_directions(double_bond_stereo)?;
         Ok(writer)
     }
 
@@ -266,11 +306,16 @@ impl<'a> Writer<'a> {
         })
     }
 
-    fn completes_unconfigured(&self, node: NodeIndex, marked: impl Fn(usize) -> bool) -> bool {
+    fn completes_unconfigured(
+        &self,
+        node: NodeIndex,
+        active: &[&DoubleBondStereo],
+        marked: impl Fn(usize) -> bool,
+    ) -> bool {
         let molecule = self.molecule;
         molecule.graph.edges(node).any(|double| {
             double.weight().order == BondOrder::Double
-                && !molecule.bond_stereo.iter().any(|s| s.bond == double.id())
+                && !active.iter().any(|s| s.bond == double.id())
                 && molecule
                     .graph
                     .edges(other_end(double, node))
@@ -278,8 +323,8 @@ impl<'a> Writer<'a> {
         })
     }
 
-    /// Picks slash marks for each configured double bond and tries alternatives when needed.
-    fn assign_directions(&mut self) -> Result<(), WriteError> {
+    /// Picks slash marks for each configured double bond, dropping unrepresentable ones if `policy` allows.
+    fn assign_directions(&mut self, policy: DoubleBondStereoPolicy) -> Result<(), WriteError> {
         let molecule = self.molecule;
         if molecule.bond_stereo.is_empty() {
             return Ok(());
@@ -291,10 +336,92 @@ impl<'a> Writer<'a> {
                 .into_iter()
                 .min()
         });
+        match self.try_directions(&stereo) {
+            Ok(()) => Ok(()),
+            Err(WriteError::DoubleBondStereo) if policy == DoubleBondStereoPolicy::Tolerate => {
+                self.assign_tolerable_directions(&stereo)
+            }
+            Err(error) => Err(error),
+        }
+    }
+
+    fn assign_tolerable_directions(
+        &mut self,
+        ordered: &[&DoubleBondStereo],
+    ) -> Result<(), WriteError> {
+        let viable: Vec<&DoubleBondStereo> = ordered
+            .iter()
+            .copied()
+            .filter(|&s| self.try_directions(&[s]).is_ok())
+            .collect();
+        if viable.len() < ordered.len() && self.try_directions(&viable).is_ok() {
+            return Ok(());
+        }
+        let mut kept: Vec<&DoubleBondStereo> = Vec::with_capacity(viable.len());
+        for &s in &viable {
+            kept.push(s);
+            if self.try_directions(&kept).is_err() {
+                kept.pop();
+            }
+        }
+        if viable.len() <= 16 && kept.len() + 1 < viable.len() {
+            let max_drops = viable.len() - kept.len() - 1;
+            let mut budget = 256usize;
+            for drops in 1..=max_drops {
+                let mut dropped = Vec::with_capacity(drops);
+                if self.try_dropping(&viable, drops, 0, &mut dropped, &mut budget) {
+                    return Ok(());
+                }
+            }
+        }
+        self.try_directions(&kept)
+    }
+
+    fn try_dropping(
+        &mut self,
+        viable: &[&DoubleBondStereo],
+        drops: usize,
+        start: usize,
+        dropped: &mut Vec<usize>,
+        budget: &mut usize,
+    ) -> bool {
+        if *budget == 0 {
+            return false;
+        }
+        if dropped.len() == drops {
+            *budget -= 1;
+            let subset: Vec<&DoubleBondStereo> = viable
+                .iter()
+                .enumerate()
+                .filter(|(i, _)| !dropped.contains(i))
+                .map(|(_, &s)| s)
+                .collect();
+            return self.try_directions(&subset).is_ok();
+        }
+        let needed = drops - dropped.len();
+        for i in start..=viable.len() - needed {
+            dropped.push(i);
+            if self.try_dropping(viable, drops, i + 1, dropped, budget) {
+                return true;
+            }
+            dropped.pop();
+            if *budget == 0 {
+                return false;
+            }
+        }
+        false
+    }
+
+    fn try_directions(&mut self, stereo: &[&DoubleBondStereo]) -> Result<(), WriteError> {
+        self.directions.fill(None);
+        if stereo.is_empty() {
+            return Ok(());
+        }
+        let molecule = self.molecule;
         let edges = molecule.graph.edge_bound();
         // Reserve marks with no alternative so earlier choices don't conflict with them.
         let mut required = vec![false; edges];
-        for s in &stereo {
+        for s in stereo {
             for side in [0, 1] {
                 let mut options = self.marker_candidates(s.ends[side], s.ends[1 - side]);
                 let first = options.next().ok_or(WriteError::DoubleBondStereo)?;
@@ -303,12 +430,11 @@ impl<'a> Writer<'a> {
                 }
             }
         }
-        let configured_end =
-            |node: NodeIndex| molecule.bond_stereo.iter().any(|s| s.ends.contains(&node));
+        let configured_end = |node: NodeIndex| stereo.iter().any(|s| s.ends.contains(&node));
         let unconfigured = |node: NodeIndex| {
             molecule.graph.edges(node).any(|edge| {
                 edge.weight().order == BondOrder::Double
-                    && !molecule.bond_stereo.iter().any(|s| s.bond == edge.id())
+                    && !stereo.iter().any(|s| s.bond == edge.id())
             })
         };
         // one mark at each end: a bond already marked, else one that configures no other
@@ -317,7 +443,7 @@ impl<'a> Writer<'a> {
         // configure
         let mut marked = vec![false; edges];
         let mut chosen = Vec::new();
-        for s in &stereo {
+        for s in stereo {
             let mut sides = [0, 1];
             sides.sort_by_key(|&side| self.position[s.ends[side].index()]);
             for side in sides {
@@ -328,7 +454,9 @@ impl<'a> Writer<'a> {
                         let other = other_end(edge, end);
                         (
                             !marked[edge.id().index()],
-                            self.completes_unconfigured(other, |i| required[i] || marked[i]),
+                            self.completes_unconfigured(other, stereo, |i| {
+                                required[i] || marked[i]
+                            }),
                             !configured_end(other),
                             unconfigured(other),
                             self.position[other.index()],
@@ -341,8 +469,8 @@ impl<'a> Writer<'a> {
                 }
             }
         }
-        self.resolve_directions(&stereo, &marked, &chosen)
-            .or_else(|_| self.retry_directions(&stereo))
+        self.resolve_directions(stereo, &marked, &chosen)
+            .or_else(|_| self.retry_directions(stereo))
     }
 
     fn retry_directions(&mut self, stereo: &[&DoubleBondStereo]) -> Result<(), WriteError> {
@@ -379,7 +507,7 @@ impl<'a> Writer<'a> {
                 side += 1;
             }
             if let Some((end, _, options)) = sides.get(side) {
-                let completes = |node| self.completes_unconfigured(node, |i| marked[i]);
+                let completes = |node| self.completes_unconfigured(node, stereo, |i| marked[i]);
                 if let Some((i, &(_, edge))) = options
                     .iter()
                     .enumerate()
@@ -492,7 +620,7 @@ impl<'a> Writer<'a> {
                 }
             })
         };
-        if read.len() != molecule.bond_stereo.len() || !molecule.bond_stereo.iter().all(agrees) {
+        if read.len() != stereo.len() || !stereo.iter().copied().all(agrees) {
             return Err(WriteError::DoubleBondStereo);
         }
         Ok(())

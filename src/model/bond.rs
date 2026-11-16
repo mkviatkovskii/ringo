@@ -7,6 +7,7 @@ pub enum BondOrder {
     Dative,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Bond {
     pub order: BondOrder,
     /// Electron-pair donor for a dative bond; None for covalent bonds.

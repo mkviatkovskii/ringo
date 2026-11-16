@@ -1,6 +1,8 @@
 use clap::Parser;
-use ringo::io::smiles::canonical::{canonical_smiles_with_limit, DEFAULT_SEARCH_LIMIT};
+use ringo::io::smiles::canonical::{canonical_smiles_with, DEFAULT_SEARCH_LIMIT};
 use ringo::io::smiles::reader::molecule::{parse_molecule_with, DirectionalStereo};
+use ringo::io::smiles::writer::DoubleBondStereoPolicy;
+use ringo::io::smiles::TolerateStereo;
 use std::fs::File;
 use std::io::{self, BufRead, BufReader, Write};
 use std::process::ExitCode;
@@ -16,9 +18,20 @@ struct Cli {
     /// How to handle invalid, incomplete, or unpreserved `/` and `\` directional marks
     #[arg(long, value_enum, default_value_t = DirectionalStereo::Reject)]
     directional_stereo: DirectionalStereo,
+    /// How to handle double-bond stereo configurations that `/` and `\` cannot express
+    #[arg(long, value_enum, default_value_t = DoubleBondStereoPolicy::Reject)]
+    double_bond_stereo: DoubleBondStereoPolicy,
+    /// Tolerate invalid directional marks on input and unrepresentable double-bond stereo on output
+    #[arg(long)]
+    tolerate_stereo: bool,
 }
 
 fn run(args: &Cli) -> Result<(), String> {
+    let policy = TolerateStereo::from_flags(
+        args.tolerate_stereo,
+        args.directional_stereo,
+        args.double_bond_stereo,
+    );
     let input: Box<dyn BufRead> = if args.smiles_file == "-" {
         Box::new(io::stdin().lock())
     } else {
@@ -35,10 +48,10 @@ fn run(args: &Cli) -> Result<(), String> {
         let result = if token.is_empty() {
             Ok(String::new())
         } else {
-            parse_molecule_with(token, args.directional_stereo)
+            parse_molecule_with(token, policy.directional)
                 .map_err(|_| "invalid or unsupported SMILES".to_owned())
                 .and_then(|(_, molecule)| {
-                    canonical_smiles_with_limit(&molecule, args.search_limit)
+                    canonical_smiles_with(&molecule, args.search_limit, policy.double_bond)
                         .map_err(|e| format!("{e:?}"))
                 })
         };

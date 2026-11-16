@@ -2,6 +2,8 @@ use clap::Parser;
 use ringo::db::exact_search::exact_search_with;
 use ringo::db::search::{similarity_search_with, SearchMode};
 use ringo::io::smiles::reader::molecule::DirectionalStereo;
+use ringo::io::smiles::writer::DoubleBondStereoPolicy;
+use ringo::io::smiles::TolerateStereo;
 use std::process::ExitCode;
 
 #[derive(Parser)]
@@ -36,13 +38,21 @@ struct Cli {
     /// How to handle invalid, incomplete, or unpreserved `/` and `\` directional marks
     #[arg(long, value_enum, default_value_t = DirectionalStereo::Reject)]
     directional_stereo: DirectionalStereo,
+    /// Tolerate stereo issues on input (`--directional-stereo tolerate`)
+    #[arg(long)]
+    tolerate_stereo: bool,
 }
 
 fn main() -> ExitCode {
     let args = Cli::parse();
+    let policy = TolerateStereo::from_flags(
+        args.tolerate_stereo,
+        args.directional_stereo,
+        DoubleBondStereoPolicy::Reject,
+    );
     let (Some(min_similarity), Some(limit)) = (args.min_similarity, args.limit) else {
         // clap requires both unless --exact is given
-        return search_exact(&args.smiles_file, &args.query, args.directional_stereo);
+        return search_exact(&args.smiles_file, &args.query, policy.directional);
     };
     let results = match similarity_search_with(
         &args.smiles_file,
@@ -52,7 +62,7 @@ fn main() -> ExitCode {
         limit,
         args.mode,
         args.validate,
-        args.directional_stereo,
+        policy.directional,
     ) {
         Ok(results) => results,
         Err(error) => {
@@ -107,6 +117,7 @@ mod tests {
                 defaults.mode,
                 defaults.validate,
                 defaults.directional_stereo,
+                defaults.tolerate_stereo,
             ),
             (
                 false,
@@ -116,6 +127,7 @@ mod tests {
                 SearchMode::Best,
                 false,
                 DirectionalStereo::Reject,
+                false,
             )
         );
         let full = Cli::try_parse_from([
@@ -125,6 +137,7 @@ mod tests {
             "--validate",
             "--directional-stereo",
             "tolerate",
+            "--tolerate-stereo",
             "0.5",
             "10",
             "0.9",
@@ -137,8 +150,15 @@ mod tests {
                 full.mode,
                 full.validate,
                 full.directional_stereo,
+                full.tolerate_stereo,
             ),
-            (0.9, SearchMode::First, true, DirectionalStereo::Tolerate)
+            (
+                0.9,
+                SearchMode::First,
+                true,
+                DirectionalStereo::Tolerate,
+                true,
+            )
         );
         assert!(
             Cli::try_parse_from(["ringo-search", "m.smi", "CCO", "0.5", "10", "--validate"])
