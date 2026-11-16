@@ -1,7 +1,7 @@
 //! Deterministic individualization/refinement for canonical SMILES.
 //!
 //! Stereo participates in refinement once the current colors distinguish its ligands.
-use super::writer::{write, WriteError};
+use super::writer::{write, write_smiles, write_smiles_ranked, DoubleBondStereoPolicy, WriteError};
 use crate::model::bond::Bond;
 use crate::model::molecule::Molecule;
 use crate::model::stereo::{Configuration, CoordinationGeometry, DoubleBondStereo, Ligand};
@@ -34,15 +34,24 @@ pub fn canonical_smiles_with_limit(
     molecule: &Molecule,
     limit: usize,
 ) -> Result<String, CanonicalError> {
+    canonical_smiles_with(molecule, limit, DoubleBondStereoPolicy::Reject)
+}
+
+/// Like [`canonical_smiles_with_limit`], with an explicit [`DoubleBondStereoPolicy`].
+pub fn canonical_smiles_with(
+    molecule: &Molecule,
+    limit: usize,
+    double_bond_stereo: DoubleBondStereoPolicy,
+) -> Result<String, CanonicalError> {
     let mut remaining = limit;
     let groups = kosaraju_scc(&molecule.graph);
     if groups.len() <= 1 {
-        return canonical_component(molecule, &mut remaining);
+        return canonical_component_with(molecule, &mut remaining, double_bond_stereo);
     }
 
     let mut output = components(molecule, &groups)
         .iter()
-        .map(|component| canonical_component(component, &mut remaining))
+        .map(|component| canonical_component_with(component, &mut remaining, double_bond_stereo))
         .collect::<Result<Vec<_>, _>>()?;
     output.sort_unstable();
     Ok(output.join("."))
@@ -112,10 +121,7 @@ fn components(molecule: &Molecule, groups: &[Vec<NodeIndex>]) -> Vec<Molecule> {
     parts
 }
 
-fn canonical_component(
-    molecule: &Molecule,
-    remaining: &mut usize,
-) -> Result<String, CanonicalError> {
+fn initial_colors(molecule: &Molecule) -> (Vec<NodeIndex>, Vec<usize>) {
     let nodes: Vec<_> = molecule.graph.node_indices().collect();
     let keys: Vec<_> = nodes
         .iter()
@@ -139,6 +145,14 @@ fn canonical_component(
         })
         .collect();
     let colors = compress(&nodes, &keys, molecule.graph.node_bound());
+    (nodes, colors)
+}
+
+fn canonical_component(
+    molecule: &Molecule,
+    remaining: &mut usize,
+) -> Result<String, CanonicalError> {
+    let (nodes, colors) = initial_colors(molecule);
     let mut search = Search {
         molecule,
         nodes,
@@ -149,6 +163,170 @@ fn canonical_component(
     let result = search.visit(colors);
     *remaining = search.remaining;
     result
+}
+
+fn canonical_component_with(
+    molecule: &Molecule,
+    remaining: &mut usize,
+    double_bond_stereo: DoubleBondStereoPolicy,
+) -> Result<String, CanonicalError> {
+    match canonical_component(molecule, remaining) {
+        Ok(smiles) => Ok(smiles),
+        Err(CanonicalError::Write(WriteError::DoubleBondStereo))
+            if double_bond_stereo == DoubleBondStereoPolicy::Tolerate =>
+        {
+            canonical_component_tolerating_double_bonds(molecule, remaining)
+        }
+        Err(error) => Err(error),
+    }
+}
+
+fn canonical_component_tolerating_double_bonds(
+    molecule: &Molecule,
+    remaining: &mut usize,
+) -> Result<String, CanonicalError> {
+    const MAX_EXACT_COMBINATIONS: usize = 128;
+
+    let viable: Vec<DoubleBondStereo> = molecule
+        .bond_stereo
+        .iter()
+        .filter(|stereo| {
+            let mut solo = molecule.clone();
+            solo.bond_stereo = vec![(*stereo).clone()];
+            write_smiles(&solo).is_ok()
+        })
+        .cloned()
+        .collect();
+    let mut reduced = molecule.clone();
+    if viable.len() < molecule.bond_stereo.len() {
+        reduced.bond_stereo = viable;
+        match canonical_component(&reduced, remaining) {
+            Ok(smiles) => return Ok(smiles),
+            Err(CanonicalError::Write(WriteError::DoubleBondStereo)) => {}
+            Err(error) => return Err(error),
+        }
+    }
+
+    let m = reduced.bond_stereo.len();
+    for drops in 1..=m {
+        if !combinations_within(m, drops, MAX_EXACT_COMBINATIONS) {
+            break;
+        }
+        if let Some(best) = best_dropping(&reduced, drops, remaining)? {
+            return Ok(best);
+        }
+    }
+    greedy_double_bond_subset(&reduced, remaining)
+}
+
+fn combinations_within(n: usize, k: usize, cap: usize) -> bool {
+    let k = k.min(n.saturating_sub(k));
+    let mut count = 1usize;
+    for i in 0..k {
+        count = count.saturating_mul(n - i) / (i + 1);
+        if count > cap {
+            return false;
+        }
+    }
+    count <= cap
+}
+
+fn best_dropping(
+    molecule: &Molecule,
+    drops: usize,
+    remaining: &mut usize,
+) -> Result<Option<String>, CanonicalError> {
+    let mut dropped = Vec::with_capacity(drops);
+    let mut best: Option<String> = None;
+    search_drops(molecule, drops, 0, &mut dropped, &mut best, remaining)?;
+    Ok(best)
+}
+
+fn search_drops(
+    molecule: &Molecule,
+    drops: usize,
+    start: usize,
+    dropped: &mut Vec<usize>,
+    best: &mut Option<String>,
+    remaining: &mut usize,
+) -> Result<(), CanonicalError> {
+    let m = molecule.bond_stereo.len();
+    if dropped.len() == drops {
+        let mut candidate = molecule.clone();
+        candidate.bond_stereo = molecule
+            .bond_stereo
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| !dropped.contains(i))
+            .map(|(_, s)| s.clone())
+            .collect();
+        match canonical_component(&candidate, remaining) {
+            Ok(smiles) => {
+                if best.as_ref().is_none_or(|prev| smiles < *prev) {
+                    *best = Some(smiles);
+                }
+            }
+            Err(CanonicalError::Write(WriteError::DoubleBondStereo)) => {}
+            Err(error) => return Err(error),
+        }
+        return Ok(());
+    }
+    let needed = drops - dropped.len();
+    for i in start..=m - needed {
+        dropped.push(i);
+        search_drops(molecule, drops, i + 1, dropped, best, remaining)?;
+        dropped.pop();
+    }
+    Ok(())
+}
+
+fn greedy_double_bond_subset(
+    molecule: &Molecule,
+    remaining: &mut usize,
+) -> Result<String, CanonicalError> {
+    let (nodes, colors) = initial_colors(molecule);
+    let search = Search {
+        molecule,
+        nodes,
+        remaining: *remaining,
+        leaves: BTreeMap::new(),
+        symmetries: Vec::new(),
+    };
+    let refined = search.refine(colors);
+    let mut order: Vec<usize> = (0..molecule.bond_stereo.len()).collect();
+    order.sort_by_key(|&i| {
+        let s = &molecule.bond_stereo[i];
+        let c0 = refined[s.ends[0].index()];
+        let c1 = refined[s.ends[1].index()];
+        let r0 = refined[s.references[0].index()];
+        let r1 = refined[s.references[1].index()];
+        if c0 <= c1 {
+            (c0, c1, s.same_side, r0, r1)
+        } else {
+            (c1, c0, s.same_side, r1, r0)
+        }
+    });
+
+    let mut kept = Vec::with_capacity(order.len());
+    for i in order {
+        kept.push(molecule.bond_stereo[i].clone());
+        let mut test = molecule.clone();
+        test.bond_stereo.clone_from(&kept);
+        if write_smiles_ranked(&test, &refined).is_err() {
+            kept.pop();
+        }
+    }
+    loop {
+        let mut test = molecule.clone();
+        test.bond_stereo.clone_from(&kept);
+        match canonical_component(&test, remaining) {
+            Ok(smiles) => return Ok(smiles),
+            Err(CanonicalError::Write(WriteError::DoubleBondStereo)) if !kept.is_empty() => {
+                kept.pop();
+            }
+            Err(error) => return Err(error),
+        }
+    }
 }
 
 fn compress<K: Ord>(nodes: &[NodeIndex], keys: &[K], bound: usize) -> Vec<usize> {
@@ -627,5 +805,71 @@ mod tests {
                 Err(CanonicalError::SearchLimit)
             );
         }
+    }
+
+    #[test]
+    fn tolerate_double_bond_stereo_drops_minimally_and_is_idempotent() {
+        use crate::io::smiles::reader::molecule::{parse_molecule_with, DirectionalStereo};
+
+        let (_, mol) = parse_molecule_with(
+            "C/C=C\\C(/C=C\\C)=C(/C=C\\C)/C(O)=C\\C",
+            DirectionalStereo::Tolerate,
+        )
+        .unwrap();
+        assert_eq!(
+            canonical_smiles_with(&mol, DEFAULT_SEARCH_LIMIT, DoubleBondStereoPolicy::Reject),
+            Err(CanonicalError::Write(WriteError::DoubleBondStereo))
+        );
+        let tolerated =
+            canonical_smiles_with(&mol, DEFAULT_SEARCH_LIMIT, DoubleBondStereoPolicy::Tolerate)
+                .unwrap();
+        assert_eq!(
+            mol.double_bond_stereo().len() - 1,
+            parse_molecule(&tolerated)
+                .unwrap()
+                .1
+                .double_bond_stereo()
+                .len(),
+            "expected minimal drop of 1 bond: {tolerated}"
+        );
+        assert_eq!(canonical(&tolerated), tolerated);
+
+        for seed in [12345_u64, 67890_u64, 13579_u64] {
+            let mut state = seed;
+            let mut perm: Vec<NodeIndex> = mol.graph.node_indices().collect();
+            for i in (1..perm.len()).rev() {
+                state ^= state << 13;
+                state ^= state >> 7;
+                state ^= state << 17;
+                let j = usize::try_from(state % (i as u64 + 1)).unwrap();
+                perm.swap(i, j);
+            }
+            let reordered = components(&mol, &[perm]).pop().unwrap();
+            assert_eq!(
+                canonical_smiles_with(
+                    &reordered,
+                    DEFAULT_SEARCH_LIMIT,
+                    DoubleBondStereoPolicy::Tolerate,
+                )
+                .unwrap(),
+                tolerated,
+                "seed {seed}"
+            );
+        }
+
+        let (_, disconnected) = parse_molecule_with(
+            "O.C/C=C\\C(/C=C\\C)=C(/C=C\\C)/C(O)=C\\C",
+            DirectionalStereo::Tolerate,
+        )
+        .unwrap();
+        assert_eq!(
+            canonical_smiles_with(
+                &disconnected,
+                DEFAULT_SEARCH_LIMIT,
+                DoubleBondStereoPolicy::Tolerate,
+            )
+            .unwrap(),
+            format!("{tolerated}.O")
+        );
     }
 }

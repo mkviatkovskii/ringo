@@ -2,6 +2,8 @@ use clap::{CommandFactory, Parser};
 use ringo::db::index::{index_file_with, DEFAULT_BATCH_LINES};
 use ringo::db::index_header::IndexHeader;
 use ringo::io::smiles::reader::molecule::DirectionalStereo;
+use ringo::io::smiles::writer::DoubleBondStereoPolicy;
+use ringo::io::smiles::TolerateStereo;
 use std::process::ExitCode;
 
 #[derive(Parser)]
@@ -29,10 +31,18 @@ struct Cli {
     /// How to handle invalid, incomplete, or unpreserved `/` and `\` directional marks
     #[arg(long, value_enum, default_value_t = DirectionalStereo::Reject)]
     directional_stereo: DirectionalStereo,
+    /// Tolerate stereo issues on input (`--directional-stereo tolerate`)
+    #[arg(long)]
+    tolerate_stereo: bool,
 }
 
 fn main() -> ExitCode {
     let args = Cli::parse();
+    let policy = TolerateStereo::from_flags(
+        args.tolerate_stereo,
+        args.directional_stereo,
+        DoubleBondStereoPolicy::Reject,
+    );
     if let Err(error) = IndexHeader::new(args.radius, args.bits) {
         Cli::command()
             .error(clap::error::ErrorKind::ValueValidation, error)
@@ -44,7 +54,7 @@ fn main() -> ExitCode {
         args.bits,
         args.batch_lines,
         args.validate,
-        args.directional_stereo,
+        policy.directional,
     ) {
         Ok(skipped) => {
             if skipped > 0 {
@@ -78,14 +88,16 @@ mod tests {
                 defaults.batch_lines,
                 defaults.validate,
                 defaults.directional_stereo,
+                defaults.tolerate_stereo,
             ),
-            (2, 512, 65_536, false, DirectionalStereo::Reject)
+            (2, 512, 65_536, false, DirectionalStereo::Reject, false)
         );
         let full = Cli::try_parse_from([
             "ringo-index",
             "--validate",
             "--directional-stereo",
             "tolerate",
+            "--tolerate-stereo",
             "m.smi",
             "3",
             "1024",
@@ -99,8 +111,9 @@ mod tests {
                 full.batch_lines,
                 full.validate,
                 full.directional_stereo,
+                full.tolerate_stereo,
             ),
-            (3, 1024, 1000, true, DirectionalStereo::Tolerate)
+            (3, 1024, 1000, true, DirectionalStereo::Tolerate, true)
         );
         assert!(
             Cli::try_parse_from(["ringo-index", "m.smi", "--validate"])

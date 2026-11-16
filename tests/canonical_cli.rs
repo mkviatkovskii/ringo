@@ -82,3 +82,30 @@ fn directional_stereo_option_rejects_or_tolerates_invalid_marks() {
     assert!(lines[0].ends_with("\thalf") && !lines[0].starts_with('\t'));
     assert!(lines[1].ends_with("\tmixed") && (lines[1].contains('/') || lines[1].contains('\\')));
 }
+
+#[test]
+fn tolerate_stereo_handles_input_and_output_double_bond_stereo() {
+    let input = "F/C=CF half\nC/C=C\\C(/C=C\\C)=C(/C=C\\C)/C(O)=C\\C conflicted\n";
+    let only_directional = run(input, &["--directional-stereo", "tolerate"]);
+    assert!(!only_directional.status.success());
+
+    let both_flags = run(
+        input,
+        &[
+            "--directional-stereo",
+            "tolerate",
+            "--double-bond-stereo",
+            "tolerate",
+        ],
+    );
+    assert!(both_flags.status.success(), "{both_flags:?}");
+
+    let umbrella = run(input, &["--tolerate-stereo"]);
+    assert!(umbrella.status.success(), "{umbrella:?}");
+    assert_eq!(umbrella.stdout, both_flags.stdout);
+
+    let text = String::from_utf8(umbrella.stdout).unwrap();
+    let recanon = run(&text, &[]);
+    assert!(recanon.status.success(), "{recanon:?}");
+    assert_eq!(String::from_utf8(recanon.stdout).unwrap(), text);
+}

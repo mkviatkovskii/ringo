@@ -5,7 +5,7 @@ use petgraph::visit::EdgeRef;
 use petgraph::Undirected;
 use std::collections::BTreeSet;
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct Molecule {
     // crate-only: the reader computes implicit hydrogens once, so outside edits would leave
     // them stale
