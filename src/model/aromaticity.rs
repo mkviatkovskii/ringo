@@ -186,14 +186,14 @@ impl Molecule {
     /// (an sp3 carbon such as the CH2 of cyclopentadiene).
     fn pi_electrons(&self, node: NodeIndex, context: &RingContext) -> Option<u32> {
         let atom = &self.graph[node];
-        let mut ring_double = false;
+        let mut ring_doubles = 0u8;
         let mut ring_aromatic = false;
         let mut exocyclic_double = None;
         for edge in self.graph.edges(node) {
             let in_ring = context.bonds.contains(edge.id().index());
             match edge.weight().order {
                 BondOrder::Triple => return None,
-                BondOrder::Double if in_ring => ring_double = true,
+                BondOrder::Double if in_ring => ring_doubles += 1,
                 BondOrder::Aromatic if in_ring => ring_aromatic = true,
                 // an aromatic bond outside rings, like biphenyl's link, ends up single
                 BondOrder::Single | BondOrder::Aromatic | BondOrder::Dative => {}
@@ -207,6 +207,11 @@ impl Molecule {
                 }
             }
         }
+        // An atom with cumulated ring double bonds (`=C=`, `=[N+]=`, `=S=`) cannot
+        // donate a single π electron without losing its second π bond and valence.
+        if ring_doubles > 1 {
+            return None;
+        }
         match exocyclic_double {
             // the C of a C=O, as in 2-pyridone, gives none
             Some(7 | 8 | 16) => return Some(0),
@@ -214,7 +219,7 @@ impl Molecule {
             Some(_) => return None,
             None => {}
         }
-        if ring_double {
+        if ring_doubles == 1 {
             return Some(1);
         }
         let neighbours = self
@@ -546,8 +551,23 @@ mod tests {
             "C1=CC=CC=CC=C1",
             "C1CCCCC1",
             "C=C1C=CC=C1",
+            "C1=CC=C=CC=1",
+            "FC1=C=C=C(F)C(F)=C1F",
+            "C1=NC=[N+]=[N+]=C1",
+            "N1=S=NSN=S=NS1",
         ] {
             assert!(aromatic_atoms(smiles).iter().all(|&a| !a), "{smiles}");
+        }
+        // Fused aromatic rings stay aromatic while adjacent cumulated rings keep their double bonds.
+        for (smiles, expected_aromatic) in [
+            ("Cc1ccc2cc1N=C=N2", 6),
+            (
+                "C=Cc1ccc(N(c2ccc(C=C)cc2)C2C=CC(C)C3=c4c(CC)cccc4=C=C=C32)cc1",
+                18,
+            ),
+        ] {
+            let count = aromatic_atoms(smiles).iter().filter(|&&a| a).count();
+            assert_eq!(count, expected_aromatic, "{smiles}");
         }
     }
 

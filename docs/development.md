@@ -58,3 +58,6 @@ Rebuild indexes: Kekulé-written macrocycles with such bridges change fingerprin
 and records such as CHEMBL2004566 are now accepted.
 Rebuild indexes when upgrading to the revised handling of tied shortest rings.
 The change can affect perceived bond orders, fingerprints, and exact search keys.
+Aromaticity perception also excludes atoms with cumulated ring double bonds from
+Hückel electron counting; rebuild indexes so cyclic allenes and cumulenes keep
+their Kekulé bonds, fingerprints, and exact search keys.

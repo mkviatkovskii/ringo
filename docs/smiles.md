@@ -51,6 +51,9 @@ acyclic and dative bonds during traversal. If a bond has more than 16 tied paths
 it keeps one representative from each end to bound work in large macrocycles.
 In mixed aromatic and Kekulé notation, an explicitly configured double bond
 can remain double beside written aromatic bonds.
+Atoms with more than one double bond in rings (cumulated cyclic systems such as
+`=C=`, `=[N+]=` or `=S=`) do not donate π electrons in Hückel perception, so
+those rings keep their double bonds and valences.
 
 ## Atom maps and classes
 
