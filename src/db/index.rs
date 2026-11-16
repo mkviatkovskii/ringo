@@ -2,7 +2,7 @@ use crate::db::exact_search::write_key_index;
 use crate::db::index_header::IndexHeader;
 use crate::db::index_item::{index_item_size, split_record, IndexItem};
 use crate::db::with_path;
-use crate::io::smiles::reader::molecule::parse_molecule;
+use crate::io::smiles::reader::molecule::{parse_molecule_with, DirectionalStereo};
 use crate::model::fingerprint::Fingerprint;
 use fixedbitset::FixedBitSet;
 use rayon::prelude::*;
@@ -25,6 +25,25 @@ pub fn index_file(
     bits: usize,
     batch_lines: usize,
     validate: bool,
+) -> io::Result<usize> {
+    index_file_with(
+        smiles_file,
+        radius,
+        bits,
+        batch_lines,
+        validate,
+        DirectionalStereo::Reject,
+    )
+}
+
+/// Like [`index_file`], with an explicit [`DirectionalStereo`] policy.
+pub fn index_file_with(
+    smiles_file: &str,
+    radius: usize,
+    bits: usize,
+    batch_lines: usize,
+    validate: bool,
+    directional_stereo: DirectionalStereo,
 ) -> io::Result<usize> {
     let header = IndexHeader::new(radius, bits)
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
@@ -87,7 +106,7 @@ pub fn index_file(
                 lines
                     .par_iter()
                     .map(|(_, line)| {
-                        parse_molecule(line.trim_end_matches(['\n', '\r']))
+                        parse_molecule_with(line.trim_end_matches(['\n', '\r']), directional_stereo)
                             .ok()
                             .filter(|(_, molecule)| !validate || molecule.validate().is_ok())
                             .map(|(_, molecule)| {

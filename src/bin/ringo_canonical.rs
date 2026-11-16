@@ -1,6 +1,6 @@
 use clap::Parser;
 use ringo::io::smiles::canonical::{canonical_smiles_with_limit, DEFAULT_SEARCH_LIMIT};
-use ringo::io::smiles::reader::molecule::parse_molecule;
+use ringo::io::smiles::reader::molecule::{parse_molecule_with, DirectionalStereo};
 use std::fs::File;
 use std::io::{self, BufRead, BufReader, Write};
 use std::process::ExitCode;
@@ -13,6 +13,9 @@ struct Cli {
     /// Maximum search nodes per molecule
     #[arg(long, default_value_t = DEFAULT_SEARCH_LIMIT)]
     search_limit: usize,
+    /// How to handle invalid, incomplete, or unpreserved `/` and `\` directional marks
+    #[arg(long, value_enum, default_value_t = DirectionalStereo::Reject)]
+    directional_stereo: DirectionalStereo,
 }
 
 fn run(args: &Cli) -> Result<(), String> {
@@ -32,7 +35,7 @@ fn run(args: &Cli) -> Result<(), String> {
         let result = if token.is_empty() {
             Ok(String::new())
         } else {
-            parse_molecule(token)
+            parse_molecule_with(token, args.directional_stereo)
                 .map_err(|_| "invalid or unsupported SMILES".to_owned())
                 .and_then(|(_, molecule)| {
                     canonical_smiles_with_limit(&molecule, args.search_limit)

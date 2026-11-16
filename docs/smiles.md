@@ -129,8 +129,11 @@ separate; `/` and `\` do not encode an allene axis here. These checks preserve t
 representation, without requiring chemically distinct terminal substituents.
 
 Absence of a stereo record means unspecified stereochemistry. Invalid, incomplete,
-unsupported or contradictory specifications produce parsing errors. Directional
-specifications that aromaticity normalization cannot preserve are also rejected.
+unsupported or contradictory specifications produce parsing errors by default. Directional
+specifications that aromaticity normalization cannot preserve are also rejected by default.
+Pass `DirectionalStereo::Tolerate` to `parse_molecule_with` (or `--directional-stereo tolerate`
+on the CLIs) to ignore incomplete, contradictory, or aromaticized `/` and `\` marks while
+retaining valid double-bond configurations.
 The reader does not perceive additional stereocentres. Optional valence validation
 is described below; arithmetic and representation limits are checked independently.
 

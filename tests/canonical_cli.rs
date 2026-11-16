@@ -67,3 +67,18 @@ fn repeated_disconnected_fragments_do_not_block_the_next_record() {
     assert!(lines.next().is_some_and(|line| line.ends_with("\tafter")));
     assert_eq!(lines.next(), None);
 }
+
+#[test]
+fn directional_stereo_option_rejects_or_tolerates_invalid_marks() {
+    let input = "F/C=CF half\nF/C=C/C=CF mixed\n";
+    let rejected = run(input, &[]);
+    assert!(!rejected.status.success());
+
+    let tolerated = run(input, &["--directional-stereo", "tolerate"]);
+    assert!(tolerated.status.success(), "{tolerated:?}");
+    let text = String::from_utf8(tolerated.stdout).unwrap();
+    let lines: Vec<_> = text.lines().collect();
+    assert_eq!(lines.len(), 2);
+    assert!(lines[0].ends_with("\thalf") && !lines[0].starts_with('\t'));
+    assert!(lines[1].ends_with("\tmixed") && (lines[1].contains('/') || lines[1].contains('\\')));
+}
