@@ -209,17 +209,28 @@ impl Molecule {
         if !aromatic || has_pi {
             return (valence, false);
         }
-        let donor_or_empty = match (atom.element.atomic_number, atom.charge) {
+        let donor_or_empty =
+            Self::aromatic_donor_or_empty(atom.element.atomic_number, atom.charge, valence);
+        (valence, !donor_or_empty)
+    }
+
+    /// Whether an aromatic atom with no remaining π bond already satisfies its valence via a lone
+    /// pair or empty p orbital at `sigma_valence` (σ bonds plus hydrogens).
+    pub(crate) fn aromatic_donor_or_empty(
+        atomic_number: u8,
+        charge: i8,
+        sigma_valence: u32,
+    ) -> bool {
+        match (atomic_number, charge) {
             // a lone pair with two neighbours: furan's O, pyrrolide's N-
-            (8 | 16 | 34 | 52, 0) | (7, -1) => valence == 2,
+            (8 | 16 | 34 | 52, 0) | (7, -1) => sigma_valence == 2,
             // with three neighbours, a lone pair (pyrrole's NH, cyclopentadienide's CH-,
             // the S+ of a thiophenium or of CHEMBL8982's [s+]([O-])) or an empty p orbital
             // (borole's B, tropylium's CH+); with two, borabenzene's B and thiopyrylium's
             // S+ need a ring double bond, like pyridine's N
-            (5 | 7 | 15 | 33, 0) | (6, -1 | 1) | (16 | 34 | 52, 1) => valence == 3,
+            (5 | 7 | 15 | 33, 0) | (6, -1 | 1) | (16 | 34 | 52, 1) => sigma_valence == 3,
             _ => false,
-        };
-        (valence, !donor_or_empty)
+        }
     }
 }
 

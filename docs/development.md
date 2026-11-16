@@ -59,8 +59,10 @@ and records such as CHEMBL2004566 are now accepted.
 Rebuild indexes when upgrading to the revised handling of tied shortest rings.
 The change can affect perceived bond orders, fingerprints, and exact search keys.
 Aromaticity perception also excludes atoms with cumulated or mixed ring/exocyclic
-double bonds and non-3-coordinate charged carbon or neutral boron from Hückel
-electron counting; rebuild indexes so those rings keep their Kekulé bonds,
+double bonds, non-3-coordinate charged carbon or neutral boron, and ring
+double-bond atoms whose σ-bond valence collides with aromatic lone-pair or
+empty-p-orbital valence (`=[S]-`, `=[PH]-`, `=[As]-`, or 4-valent `=[N]-`) from
+Hückel electron counting; rebuild indexes so those rings keep their Kekulé bonds,
 fingerprints, and exact search keys.
 Bracketed `[si]` is now accepted on input (written as `[Si]` with `:` bonds when
 aromatic, or `[si]` when retaining non-aromatic single bonds).
