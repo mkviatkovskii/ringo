@@ -450,6 +450,18 @@ mod tests {
     }
 
     #[test]
+    fn canonicalizing_preserves_unspecified_double_bond_stereo() {
+        // SureChEMBL SCHEMBL12328173 has a required slash next to an unspecified double bond.
+        let input = r"CC1=C/C(=C(/C#N)C(=O)O)C=C(/C=C/c2ccc(N(c3ccccc3)c3ccc(-c4ccc(N(c5ccccc5)c5ccc(/C=C/C6=C/C(=C(\C#N)C(=O)O)C=C(C)O6)cc5)cc4)cc3)cc2)O1";
+        let molecule = parse_molecule(input).unwrap().1;
+        let output = canonical_smiles(&molecule).unwrap();
+        let reread = parse_molecule(&output).unwrap().1;
+        assert_eq!(reread.double_bond_stereo().len(), 5);
+        assert_eq!(molecule.exact_match(&reread), Ok(true));
+        assert_eq!(canonical_smiles(&reread), Ok(output));
+    }
+
+    #[test]
     fn opposite_configurations_split_otherwise_identical_branches() {
         for input in [
             "F[C@H](Cl)[C@H](Br)[C@@H](F)Cl",
