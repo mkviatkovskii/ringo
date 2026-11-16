@@ -4,9 +4,13 @@
 //! record count (`u64`), all little-endian. Then one record per parsed line: its
 //! `Molecule::exact_key` and its line offset (`u64` each), sorted by key, then offset.
 use crate::db::with_path;
+use crate::io::smiles::canonical::{canonical_smiles, CanonicalError};
 use crate::io::smiles::reader::molecule::{parse_molecule_with, DirectionalStereo};
+use crate::io::smiles::writer::WriteError;
 use crate::model::exact_match::ExactMatchError;
+use crate::model::molecule::Molecule;
 use memmap2::Mmap;
+use std::borrow::Cow;
 use std::fs::File;
 use std::io::{self, BufRead, BufReader, Seek, Write};
 
@@ -48,8 +52,32 @@ pub struct ExactHits {
     pub undecided: Vec<(String, ExactMatchError)>,
 }
 
+fn canonical_for_exact(molecule: &Molecule) -> Result<String, CanonicalError> {
+    let normalized = if molecule
+        .graph
+        .node_weights()
+        .any(|atom| atom.atom_class != 0)
+    {
+        let mut copy = molecule.clone();
+        for atom in copy.graph.node_weights_mut() {
+            atom.atom_class = 0;
+        }
+        Cow::Owned(copy)
+    } else {
+        Cow::Borrowed(molecule)
+    };
+    canonical_smiles(&normalized)
+}
+
+fn canonical_error_to_exact(error: CanonicalError) -> ExactMatchError {
+    match error {
+        CanonicalError::SearchLimit => ExactMatchError::TooSymmetric,
+        CanonicalError::Write(_) => ExactMatchError::UnsupportedStereo,
+    }
+}
+
 /// Finds the lines of `smiles_file` that hold the same molecule as `query`, by its key in
-/// `<smiles_file>.key` and then `Molecule::exact_match` on each line with that key.
+/// `<smiles_file>.key` and canonical SMILES comparison on each line with that key.
 pub fn exact_search(smiles_file: &str, query: &str) -> io::Result<ExactHits> {
     exact_search_with(smiles_file, query, DirectionalStereo::Reject)
 }
@@ -119,6 +147,7 @@ pub fn exact_search_with(
     // (key, offset) word pairs
     let records = map[HEADER_SIZE..].as_chunks::<8>().0.as_chunks::<2>().0;
     let key = query.exact_key();
+    let query_canon = canonical_for_exact(&query);
     let start = records.partition_point(|[k, _]| u64::from_le_bytes(*k) < key);
     let mut hits = ExactHits {
         lines: Vec::new(),
@@ -136,10 +165,26 @@ pub fn exact_search_with(
         let (_, molecule) =
             parse_molecule_with(line.trim_end_matches(['\n', '\r']), directional_stereo)
                 .map_err(|_| stale(format!("{smiles_file} changed since it was indexed")))?;
-        match query.exact_match(&molecule) {
-            Ok(true) => hits.lines.push(line),
-            Ok(false) => {}
-            Err(error) => hits.undecided.push((line, error)),
+        match (
+            query_canon.as_ref(),
+            canonical_for_exact(&molecule).as_ref(),
+        ) {
+            (Ok(q), Ok(m)) => {
+                if q == m {
+                    hits.lines.push(line);
+                }
+            }
+            (Err(CanonicalError::Write(WriteError::DoubleBondStereo)), _)
+            | (_, Err(CanonicalError::Write(WriteError::DoubleBondStereo))) => {
+                match query.exact_match(&molecule) {
+                    Ok(true) => hits.lines.push(line),
+                    Ok(false) => {}
+                    Err(error) => hits.undecided.push((line, error)),
+                }
+            }
+            (Err(err), _) | (_, Err(err)) => {
+                hits.undecided.push((line, canonical_error_to_exact(*err)));
+            }
         }
     }
     Ok(hits)
@@ -150,7 +195,6 @@ mod test {
     use crate::db::exact_search::exact_search;
     use crate::db::index::test::TestDir;
     use crate::db::index::{index_file, DEFAULT_BATCH_LINES};
-    use crate::model::exact_match::ExactMatchError;
 
     fn index(dir: &TestDir, lines: &[&str]) -> String {
         let smiles_file = dir.path().join("m.smi");
@@ -199,23 +243,21 @@ mod test {
     }
 
     #[test]
-    fn test_exact_search_reports_lines_it_cannot_compare() {
-        let dir = TestDir::new("test_exact_search_undecided");
+    fn test_exact_search_handles_symmetric_dendrimers_and_atom_maps() {
+        let dir = TestDir::new("test_exact_search_symmetric");
         let tree = "C(C(C(CC)CC)C(CC)CC)C(C(CC)CC)C(CC)CC";
         let target = format!("[C@H](F)(Cl)C({tree})({tree})C");
         let query = format!("[C@@H](F)(Cl)C({tree})({tree})C");
-        let smiles_file = index(&dir, &[&target, "C[Pt@SP1](F)(Cl)N", "CCO"]);
+        let smiles_file = index(
+            &dir,
+            &[&target, "C[Pt@SP1](F)(Cl)N", "CCO", "[CH3:1][OH:2]"],
+        );
         let hits = exact_search(&smiles_file, &query).unwrap();
         assert_eq!(hits.lines, Vec::<String>::new());
-        let undecided: Vec<_> = hits
-            .undecided
-            .iter()
-            .map(|(line, error)| (line.trim_end(), *error))
-            .collect();
-        assert_eq!(
-            undecided,
-            [(target.as_str(), ExactMatchError::TooSymmetric)]
-        );
+        assert_eq!(hits.undecided, Vec::new());
+
+        assert_eq!(found(&smiles_file, &target), [target]);
+        assert_eq!(found(&smiles_file, "CO"), ["[CH3:1][OH:2]"]);
 
         let sp = exact_search(&smiles_file, "C[Pt@SP2](F)(Cl)N").unwrap();
         assert_eq!(sp.lines, Vec::<String>::new());
