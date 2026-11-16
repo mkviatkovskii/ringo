@@ -7,7 +7,7 @@ use crate::model::stereo::{AtomStereo, Configuration, DoubleBondStereo, Ligand};
 use petgraph::stable_graph::NodeIndex;
 use petgraph::visit::IntoEdgeReferences;
 use std::collections::HashMap;
-use winnow::combinator::{alt, preceded, repeat};
+use winnow::combinator::{alt, delimited, preceded, repeat};
 use winnow::error::{ContextError, ErrMode};
 use winnow::prelude::*;
 use winnow::stream::AsChar;
@@ -17,7 +17,7 @@ enum Token {
     /// The atom, whether it was written in brackets, and its chirality tag.
     Atom(Atom, bool, Option<Chirality>),
     Bond(ParsedBond, Option<bool>),
-    Ring(u8),
+    Ring(u32),
     Open,
     Close,
     Dot,
@@ -26,13 +26,14 @@ enum Token {
 // a bond with no symbol is None until both its atoms are known
 type PendingBond = (NodeIndex, NodeIndex, Option<ParsedBond>);
 
-/// A ring-closure number: one digit, or `%` and exactly two digits, so `12` is rings 1 and 2.
-fn parse_cycle_digit(input: &mut &str) -> ModalResult<u8> {
+/// A ring-closure number: one digit, `%` and two digits (`%10`–`%99`), or parenthesized `%(N)`.
+fn parse_cycle_digit(input: &mut &str) -> ModalResult<u32> {
     alt((
-        preceded('%', take_while(2, AsChar::is_dec_digit)),
         take_while(1, AsChar::is_dec_digit),
+        delimited("%(", take_while(1.., AsChar::is_dec_digit), ')'),
+        preceded('%', take_while(2, AsChar::is_dec_digit)),
     ))
-    .try_map(str::parse::<u8>)
+    .try_map(str::parse::<u32>)
     .parse_next(input)
 }
 
@@ -129,7 +130,7 @@ struct OpenRing {
     slot: usize,
 }
 struct RingClosures {
-    open: HashMap<u8, OpenRing>,
+    open: HashMap<u32, OpenRing>,
     directional_stereo: DirectionalStereo,
 }
 impl RingClosures {
@@ -142,7 +143,7 @@ impl RingClosures {
 
     fn accept(
         &mut self,
-        digit: u8,
+        digit: u32,
         prev_node: NodeIndex,
         (prev_bond, prev_direction): (Option<ParsedBond>, Option<bool>),
         pending_bonds: &mut Vec<PendingBond>,
@@ -1051,13 +1052,25 @@ mod tests {
         };
         // each digit is its own ring: bicyclo[2.2.0]hexane opens rings 1 and 2 on one atom
         assert_eq!(counts("C12CCC1CC2"), (6, 7));
-        // two-digit ring numbers after %
+        // two-digit and parenthesized ring numbers after %
         assert_eq!(counts("C%10CC%10"), (3, 3));
         assert_eq!(counts("C%12CCC%12"), (4, 4));
+        assert_eq!(counts("C%(100)CC%(100)"), (3, 3));
+        assert_eq!(counts("C%(0)CC%(0)"), (3, 3));
+        assert_eq!(counts("C%(12)CCC%(12)"), (4, 4));
         // a ring number can be reused after it closes
         assert_eq!(counts("C1CC1C1CC1"), (6, 7));
-        // % with one digit, an atom bonded to itself, and a second bond between two atoms
-        for smiles in ["C%1CC1", "C11", "C1C1", "C12CC12"] {
+        // % with one digit, malformed %(), overflow, an atom bonded to itself, and double ring bond
+        for smiles in [
+            "C%1CC1",
+            "C%()CC%()",
+            "C%(100CC%(100)",
+            "C%(12a)CC%(12a)",
+            "C%(4294967296)CC%(4294967296)",
+            "C11",
+            "C1C1",
+            "C12CC12",
+        ] {
             assert!(parse_molecule(smiles).is_err(), "{smiles}");
         }
     }
