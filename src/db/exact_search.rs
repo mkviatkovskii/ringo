@@ -4,7 +4,7 @@
 //! record count (`u64`), all little-endian. Then one record per parsed line: its
 //! `Molecule::exact_key` and its line offset (`u64` each), sorted by key, then offset.
 use crate::db::with_path;
-use crate::io::smiles::reader::molecule::parse_molecule;
+use crate::io::smiles::reader::molecule::{parse_molecule_with, DirectionalStereo};
 use crate::model::exact_match::ExactMatchError;
 use memmap2::Mmap;
 use std::fs::File;
@@ -51,7 +51,17 @@ pub struct ExactHits {
 /// Finds the lines of `smiles_file` that hold the same molecule as `query`, by its key in
 /// `<smiles_file>.key` and then `Molecule::exact_match` on each line with that key.
 pub fn exact_search(smiles_file: &str, query: &str) -> io::Result<ExactHits> {
-    let query = parse_molecule(query)
+    exact_search_with(smiles_file, query, DirectionalStereo::Reject)
+}
+
+/// Like [`exact_search`], with an explicit [`DirectionalStereo`] policy for both the query
+/// and indexed records read back from `smiles_file`.
+pub fn exact_search_with(
+    smiles_file: &str,
+    query: &str,
+    directional_stereo: DirectionalStereo,
+) -> io::Result<ExactHits> {
+    let query = parse_molecule_with(query, directional_stereo)
         .map_err(|_| {
             io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -123,8 +133,9 @@ pub fn exact_search(smiles_file: &str, query: &str) -> io::Result<ExactHits> {
         reader
             .read_line(&mut line)
             .map_err(with_path(smiles_file))?;
-        let (_, molecule) = parse_molecule(line.trim_end_matches(['\n', '\r']))
-            .map_err(|_| stale(format!("{smiles_file} changed since it was indexed")))?;
+        let (_, molecule) =
+            parse_molecule_with(line.trim_end_matches(['\n', '\r']), directional_stereo)
+                .map_err(|_| stale(format!("{smiles_file} changed since it was indexed")))?;
         match query.exact_match(&molecule) {
             Ok(true) => hits.lines.push(line),
             Ok(false) => {}

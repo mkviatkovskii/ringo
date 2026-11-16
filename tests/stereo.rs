@@ -197,6 +197,45 @@ fn directional_meaning_and_errors() {
 }
 
 #[test]
+fn directional_stereo_tolerate_keeps_valid_and_drops_invalid_marks() {
+    use ringo::io::smiles::canonical::canonical_smiles;
+    use ringo::io::smiles::reader::molecule::{parse_molecule_with, DirectionalStereo};
+
+    for (smiles, expected_bonds) in [
+        ("C/C", 0),
+        ("F/C=CF", 0),
+        (r"C/C(\F)=C/F", 0),
+        ("F/C=C/1CCCCC/1", 0),
+        ("F/C=C/CC=C/F", 1),
+        (
+            "O=C(O)C(=C(/C1=C/CCCCCCCC1)/C1=C/CCCCCCCC1)/C1=C/CCCCCCCC1",
+            3,
+        ),
+        (
+            r"CC(=O)NC[C@@H]1OC(=O)N2C3=C/C(=C4\C(F)=C3c3nc(N5CCS(=N)(=O)CC5)ccc34)C12",
+            0,
+        ),
+        (
+            "Cc1c(F)c(F)c(/C(C#N)=C2C(=C(/C#N)c3c(F)c(F)c(F)c(F)c3F)C/2=C(/C#N)c2c(F)c(F)c(C(F)(F)F)c(F)c2F)c(F)c1F",
+            2,
+        ),
+    ] {
+        assert!(parse_molecule(smiles).is_err(), "{smiles}");
+        let molecule = parse_molecule_with(smiles, DirectionalStereo::Tolerate)
+            .unwrap_or_else(|e| panic!("{smiles}: {e:?}"))
+            .1;
+        assert_eq!(
+            molecule.double_bond_stereo().len(),
+            expected_bonds,
+            "{smiles}"
+        );
+        let canonical = canonical_smiles(&molecule).unwrap();
+        let reread = parse_molecule(&canonical).unwrap().1;
+        assert_eq!(molecule.exact_match(&reread), Ok(true), "{smiles}");
+    }
+}
+
+#[test]
 fn macrocyclic_lactone_keeps_its_configured_double_bond() {
     use ringo::model::bond::BondOrder;
     for (smiles, plain, aromatic_atoms) in [

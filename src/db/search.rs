@@ -1,7 +1,7 @@
 use crate::db::index_header::{IndexHeader, INDEX_HEADER_SIZE};
 use crate::db::index_item::{index_item_size, split_record};
 use crate::db::with_path;
-use crate::io::smiles::reader::molecule::parse_molecule;
+use crate::io::smiles::reader::molecule::{parse_molecule_with, DirectionalStereo};
 use memmap2::Mmap;
 use rayon::prelude::*;
 use std::fs::File;
@@ -34,8 +34,35 @@ pub fn similarity_search(
     mode: SearchMode,
     validate: bool,
 ) -> io::Result<Vec<SearchResult>> {
+    similarity_search_with(
+        smiles_file,
+        query,
+        min_similarity,
+        max_similarity,
+        limit,
+        mode,
+        validate,
+        DirectionalStereo::Reject,
+    )
+}
+
+/// Like [`similarity_search`], with an explicit [`DirectionalStereo`] policy for the query.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "matches similarity_search plus directional_stereo"
+)]
+pub fn similarity_search_with(
+    smiles_file: &str,
+    query: &str,
+    min_similarity: f32,
+    max_similarity: f32,
+    limit: usize,
+    mode: SearchMode,
+    validate: bool,
+    directional_stereo: DirectionalStereo,
+) -> io::Result<Vec<SearchResult>> {
     let invalid_query = |message| io::Error::new(io::ErrorKind::InvalidInput, message);
-    let (_, query) = parse_molecule(query)
+    let (_, query) = parse_molecule_with(query, directional_stereo)
         .map_err(|_| invalid_query(format!("could not parse query {query}")))?;
 
     if validate {

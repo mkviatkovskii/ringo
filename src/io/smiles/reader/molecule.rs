@@ -92,11 +92,30 @@ fn add_bonds(molecule: &mut Molecule, pending_bonds: Vec<PendingBond>) {
     }
 }
 
+/// Policy for invalid, incomplete, or unpreserved `/` and `\` directional double-bond marks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, clap::ValueEnum)]
+pub enum DirectionalStereo {
+    /// Reject incomplete, contradictory, or aromaticized `/` and `\` marks (default).
+    #[default]
+    Reject,
+    /// Ignore invalid or unpreserved `/` and `\` marks while keeping valid ones.
+    Tolerate,
+}
+
 /// Parses a molecule from the start of `input`; returns the rest (empty, or whitespace and
 /// a title) and the molecule. Anything else left over is SMILES the reader does not
 /// support, and an error, so it never yields a partial molecule.
 pub fn parse_molecule(input: &str) -> ModalResult<(&str, Molecule)> {
-    let (rest, molecule) = parse_molecule_next.parse_peek(input)?;
+    parse_molecule_with(input, DirectionalStereo::Reject)
+}
+
+/// Parses a molecule from the start of `input` using the given directional stereo policy.
+pub fn parse_molecule_with(
+    input: &str,
+    directional_stereo: DirectionalStereo,
+) -> ModalResult<(&str, Molecule)> {
+    let (rest, molecule) =
+        (|i: &mut &str| parse_molecule_next(i, directional_stereo)).parse_peek(input)?;
     if !rest.is_empty() && !rest.starts_with(char::is_whitespace) {
         return Err(ErrMode::Cut(ContextError::new()));
     }
@@ -109,11 +128,18 @@ struct OpenRing {
     direction: Option<bool>,
     slot: usize,
 }
-#[derive(Default)]
 struct RingClosures {
     open: HashMap<u8, OpenRing>,
+    directional_stereo: DirectionalStereo,
 }
 impl RingClosures {
+    fn new(directional_stereo: DirectionalStereo) -> Self {
+        Self {
+            open: HashMap::new(),
+            directional_stereo,
+        }
+    }
+
     fn accept(
         &mut self,
         digit: u8,
@@ -149,10 +175,16 @@ impl RingClosures {
             }
             if let (Some(a), Some(b)) = (open_direction, prev_direction) {
                 if a == b {
-                    return Err(ErrMode::Cut(ContextError::new()));
+                    match self.directional_stereo {
+                        DirectionalStereo::Reject => {
+                            return Err(ErrMode::Cut(ContextError::new()));
+                        }
+                        DirectionalStereo::Tolerate => {}
+                    }
+                } else {
+                    directions.push((open_node, prev_node, a));
                 }
-            }
-            if let Some(direction) = open_direction.or(prev_direction.map(|d: bool| !d)) {
+            } else if let Some(direction) = open_direction.or(prev_direction.map(|d: bool| !d)) {
                 directions.push((open_node, prev_node, direction));
             }
             ligand_order[open_node.index()][slot] = Some(prev_node);
@@ -176,12 +208,15 @@ impl RingClosures {
     }
 }
 
-fn parse_molecule_next(input: &mut &str) -> ModalResult<Molecule> {
+fn parse_molecule_next(
+    input: &mut &str,
+    directional_stereo: DirectionalStereo,
+) -> ModalResult<Molecule> {
     let mut molecule = Molecule::new();
     let mut ligand_order: Vec<Vec<Option<NodeIndex>>> = Vec::new();
     let mut chiral_atoms = Vec::new();
     let mut has_previous = Vec::new();
-    let mut rings = RingClosures::default();
+    let mut rings = RingClosures::new(directional_stereo);
     let mut stack: Vec<NodeIndex> = Vec::new();
     let mut pending_bonds: Vec<PendingBond> = Vec::new();
     let mut organic_nodes: Vec<(NodeIndex, u8, bool)> = Vec::new();
@@ -284,6 +319,7 @@ fn parse_molecule_next(input: &mut &str) -> ModalResult<Molecule> {
         &ligand_order,
         &has_previous,
         &directions,
+        directional_stereo,
     )
 }
 
@@ -311,6 +347,7 @@ fn finish_molecule(
     ligand_order: &[Vec<Option<NodeIndex>>],
     has_previous: &[bool],
     directions: &[(NodeIndex, NodeIndex, bool)],
+    directional_stereo: DirectionalStereo,
 ) -> ModalResult<Molecule> {
     for (node, atomic_number, aromatic) in organic_nodes {
         let hs = implicit_hydrogens(&molecule, node, atomic_number, aromatic)?;
@@ -322,7 +359,8 @@ fn finish_molecule(
     // after the hydrogens: perception moves electrons around, not hydrogens
     if !directions.is_empty() && molecule.input_orders.contains(&BondOrder::Aromatic) {
         // Mixed notation can give a configured bond explicitly. Validate again after perception.
-        molecule.bond_stereo = double_bond_stereo(&molecule, directions).unwrap_or_default();
+        molecule.bond_stereo =
+            double_bond_stereo_with(&molecule, directions, directional_stereo).unwrap_or_default();
     }
     molecule.perceive_aromaticity();
 
@@ -395,32 +433,40 @@ fn finish_molecule(
             configuration,
         });
     }
-    molecule.bond_stereo = double_bond_stereo(&molecule, directions)
+    molecule.bond_stereo = double_bond_stereo_with(&molecule, directions, directional_stereo)
         .ok_or_else(|| ErrMode::Cut(ContextError::new()))?;
     Ok(molecule)
 }
 
 /// The double-bond configurations that `/` and `\` bonds give, each written `(first atom,
-/// second atom, is '/')`. None if a direction is on a bond that can't take one, is used by no
-/// configuration, or contradicts another.
+/// second atom, is '/')`. Returns `None` if a direction is on a bond that can't take one,
+/// is used by no configuration, or contradicts another.
 pub(crate) fn double_bond_stereo(
     molecule: &Molecule,
     directions: &[(NodeIndex, NodeIndex, bool)],
+) -> Option<Vec<DoubleBondStereo>> {
+    double_bond_stereo_with(molecule, directions, DirectionalStereo::Reject)
+}
+
+fn double_bond_stereo_with(
+    molecule: &Molecule,
+    directions: &[(NodeIndex, NodeIndex, bool)],
+    directional_stereo: DirectionalStereo,
 ) -> Option<Vec<DoubleBondStereo>> {
     use petgraph::visit::EdgeRef;
     let mut stereo = Vec::new();
     if directions.is_empty() {
         return Some(stereo);
     }
-    let mut used = vec![false; directions.len()];
-    for &(a, b, _) in directions {
-        if molecule
+    let valid_bond = |&(a, b, _): &(NodeIndex, NodeIndex, bool)| {
+        molecule
             .get_bond_by_atoms(a, b)
-            .is_none_or(|bond| !matches!(bond.order, BondOrder::Single | BondOrder::Aromatic))
-        {
-            return None;
-        }
+            .is_some_and(|bond| matches!(bond.order, BondOrder::Single | BondOrder::Aromatic))
+    };
+    if directional_stereo == DirectionalStereo::Reject && !directions.iter().all(valid_bond) {
+        return None;
     }
+    let mut used = vec![false; directions.len()];
     for edge in molecule.graph.edge_references() {
         if edge.weight().order != BondOrder::Double {
             continue;
@@ -429,6 +475,9 @@ pub(crate) fn double_bond_stereo(
         let mut sides = [Vec::new(), Vec::new()];
         for (side, &end) in ends.iter().enumerate() {
             for (i, &(a, b, up)) in directions.iter().enumerate() {
+                if directional_stereo == DirectionalStereo::Tolerate && !valid_bond(&(a, b, up)) {
+                    continue;
+                }
                 if a == end {
                     sides[side].push((b, up, i));
                 } else if b == end {
@@ -437,9 +486,13 @@ pub(crate) fn double_bond_stereo(
             }
         }
         if let (Some(a), Some(b)) = (sides[0].first(), sides[1].first()) {
-            for side in &sides {
-                if side.len() > 2 || (side.len() == 2 && side[0].1 == side[1].1) {
-                    return None;
+            if sides
+                .iter()
+                .any(|side| side.len() > 2 || (side.len() == 2 && side[0].1 == side[1].1))
+            {
+                match directional_stereo {
+                    DirectionalStereo::Reject => return None,
+                    DirectionalStereo::Tolerate => continue,
                 }
             }
             stereo.push(DoubleBondStereo {
@@ -453,7 +506,7 @@ pub(crate) fn double_bond_stereo(
             }
         }
     }
-    if used.contains(&false) {
+    if directional_stereo == DirectionalStereo::Reject && used.contains(&false) {
         return None;
     }
     Some(stereo)
