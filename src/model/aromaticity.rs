@@ -207,9 +207,9 @@ impl Molecule {
                 }
             }
         }
-        // An atom with cumulated ring double bonds (`=C=`, `=[N+]=`, `=S=`) cannot
-        // donate a single π electron without losing its second π bond and valence.
-        if ring_doubles > 1 {
+        // An atom with cumulated or mixed ring/exocyclic double bonds (`=C=`, `=S(=O)`, `=[N+]=`)
+        // cannot donate a single π electron without losing a π bond and changing valence.
+        if ring_doubles > 1 || (ring_doubles > 0 && exocyclic_double.is_some()) {
             return None;
         }
         match exocyclic_double {
@@ -230,16 +230,15 @@ impl Molecule {
             + usize::from(atom.hs)
             + usize::from(atom.implicit_hs);
         match (atom.element.atomic_number, atom.charge) {
-            // a lone pair: pyrrole's N, furan's O, thiophene's S
-            (7 | 15, 0) if neighbours == 3 => Some(2),
+            // a lone pair: pyrrole's N, furan's O, thiophene's S, cyclopentadienyl anion
+            (7 | 15, 0) | (6, -1) if neighbours == 3 => Some(2),
             // but a neutral O or S between two single bonds only bridges a macrocycle
             // (9 or more atoms, as in RDKit since 2026.09, rdkit/rdkit#9398): the
             // lactone ring of CHEMBL2004566 keeps its C=N double bond
             (8 | 16, 0) if neighbours == 2 && context.smallest.get(&node) >= Some(&9) => None,
             (7, -1) | (8 | 16 | 34 | 52, 0) if neighbours == 2 => Some(2),
-            // the cyclopentadienyl anion, and an empty p orbital: tropylium, boron
-            (6, -1) => Some(2),
-            (6, 1) | (5, 0) => Some(0),
+            // an empty p orbital: tropylium, boron
+            (6, 1) | (5, 0) if neighbours == 3 => Some(0),
             // an atom written aromatic with no lone pair to give: pyridine's n, any c
             _ if ring_aromatic => Some(1),
             _ => None,
@@ -559,12 +558,17 @@ mod tests {
             assert!(aromatic_atoms(smiles).iter().all(|&a| !a), "{smiles}");
         }
         // Fused aromatic rings stay aromatic while adjacent cumulated rings keep their double bonds.
+        // Mixed ring/exocyclic double bonds and non-3-coordinate charged C or neutral B also stay non-aromatic.
         for (smiles, expected_aromatic) in [
             ("Cc1ccc2cc1N=C=N2", 6),
             (
                 "C=Cc1ccc(N(c2ccc(C=C)cc2)C2C=CC(C)C3=c4c(CC)cccc4=C=C=C32)cc1",
                 18,
             ),
+            ("CS1(=O)=Nc2nc(C(=O)O)cn2-c2ccccc21", 11),
+            ("[B]1Oc2ccccc2O1", 6),
+            ("F[B-](F)(F)F.[C+]1Sc2ccccc2S1", 6),
+            ("CN1C=CN(C)[CH2+]1Cl.F[B-](F)(F)F", 0),
         ] {
             let count = aromatic_atoms(smiles).iter().filter(|&&a| a).count();
             assert_eq!(count, expected_aromatic, "{smiles}");

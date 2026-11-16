@@ -122,6 +122,10 @@ fn aromatic_and_dative_valence_keep_supported_spellings() {
         "s1cccc1",
         "O=c1cccc[nH]1",
         "c1ccccc1:c1ccccc1",
+        "Cs1ccccc1",
+        "[sH]1ccccc1",
+        "c1cc[se](C)cc1",
+        "c1cc[te](C)cc1",
         "[NH3]->[Cu+2]",
         "[Cu+2]<-[NH3]",
         "n1ccccc1->[Cu]",
@@ -182,7 +186,8 @@ fn aromatic_annotations_need_a_ring_and_a_kekule_structure() {
     }
     for (smiles, error) in [
         ("c1cccc1", "no Kekulé structure"), // cyclopentadiene's CH2 written as c
-        ("c1ccnc1", "no Kekulé structure"), // pyrrole without its NH
+        ("Cs1cccc1", "no Kekulé structure"), // 3-neighbour S needs a ring π bond, leaving 5 unpaired atoms
+        ("c1ccnc1", "no Kekulé structure"),  // pyrrole without its NH
         ("c1cc[nH]cc1", "no Kekulé structure"), // pyridine with an NH
         ("C=c1ccccc1", "no Kekulé structure"), // an exocyclic C=C takes one ring electron
         ("c1cccc1c1cccc1", "no Kekulé structure"), // the link is single, not a C=C
