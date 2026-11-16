@@ -251,27 +251,24 @@ atom classes, aromaticity, bond orders, dative bonds and stereo.
   the opening digit. Ring digits are reused once closed, but not on the atom that
   closes them, and go on to `%10`–`%99`.
 - `@`/`@@` are recomputed for the ligand order of the output, for tetrahedral centres
-  and allenes. `/` and `\` are chosen again, then checked against what the reader
-  makes of them.
+  and allenes. `@SP1`–`@SP3`, `@TB1`–`@TB20`, and `@OH1`–`@OH30` are renumbered for
+  any ligand ordering. `/` and `\` are chosen again, then checked against what the
+  reader makes of them.
 - A configuration the output can't express is an error, never a different molecule:
-  square-planar, trigonal-bipyramidal and octahedral centres whose ligands come out in
-  a different order (their permutation numbers aren't renumbered yet), double-bond
-  configurations that `/` and `\` can't mark in that order, and more than 99 open
-  rings.
+  double-bond configurations that `/` and `\` can't mark in that order, and more than
+  99 open rings.
 
 The graph-ranking stage of [#63](https://github.com/mkviatkovskii/ringo/issues/63)
 is available through `canonical::canonical_smiles(&molecule)`. It sorts atom
 invariants, refines neighbour partitions and searches unresolved ties, retaining
-the smallest written result. Tetrahedral, allene and double-bond configurations
-can distinguish otherwise identical branches once the ligand ranks resolve their
-parity. Matching leaf outputs reveal automorphisms; their
-generators prune equivalent branches only when they preserve the current partition.
-No platform-dependent hashes are used. Canonicalization consistently rejects all
-SP/TB/OH centres before searching; the plain writer can still preserve their
-original ligand order. A failed writer ordering is skipped while searching other
-orderings; exhausting the search budget still returns an error. Disconnected
-components are ranked separately and their spellings sorted, with one search
-budget shared by the full record.
+the smallest written result. Tetrahedral, square-planar, trigonal-bipyramidal,
+octahedral, allene and double-bond configurations participate in refinement and
+can distinguish otherwise identical branches. Matching leaf outputs reveal
+automorphisms; their generators prune equivalent branches only when they preserve
+the current partition. No platform-dependent hashes are used. A failed writer
+ordering is skipped while searching other orderings; exhausting the search budget
+still returns an error. Disconnected components are ranked separately and their
+spellings sorted, with one search budget shared by the full record.
 
 `ringo-canonical <smiles_file>` writes one output line per input line; use `-`
 for stdin. Record names are retained after a tab. Blank records produce blank lines.

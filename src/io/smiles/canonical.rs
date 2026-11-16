@@ -4,7 +4,7 @@
 use super::writer::{write, WriteError};
 use crate::model::bond::Bond;
 use crate::model::molecule::Molecule;
-use crate::model::stereo::{Configuration, DoubleBondStereo, Ligand};
+use crate::model::stereo::{Configuration, CoordinationGeometry, DoubleBondStereo, Ligand};
 use petgraph::algo::kosaraju_scc;
 use petgraph::stable_graph::NodeIndex;
 use petgraph::visit::{EdgeIndexable, EdgeRef, IntoEdgeReferences, NodeIndexable};
@@ -34,13 +34,6 @@ pub fn canonical_smiles_with_limit(
     molecule: &Molecule,
     limit: usize,
 ) -> Result<String, CanonicalError> {
-    if molecule
-        .stereo
-        .iter()
-        .any(|s| !matches!(s.configuration, Configuration::Tetrahedral(_)))
-    {
-        return Err(CanonicalError::Write(WriteError::UnsupportedStereo));
-    }
     let mut remaining = limit;
     let groups = kosaraju_scc(&molecule.graph);
     if groups.len() <= 1 {
@@ -180,7 +173,7 @@ struct Search<'a> {
     symmetries: Vec<Vec<usize>>,
 }
 
-#[derive(PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum LigandColor {
     Hydrogen,
     LonePair,
@@ -191,6 +184,7 @@ enum LigandColor {
 #[derive(PartialEq, Eq, PartialOrd, Ord)]
 enum StereoColor {
     Tetrahedral(Option<bool>),
+    Coordination(Option<CoordinationGeometry<LigandColor>>),
     Allene(Option<bool>),
     DoubleBond(usize, Option<bool>),
 }
@@ -226,11 +220,19 @@ impl Search<'_> {
         };
         let mut result: Vec<Vec<StereoColor>> = (0..colors.len()).map(|_| Vec::new()).collect();
         for stereo in &molecule.stereo {
-            if let Configuration::Tetrahedral(n) = stereo.configuration {
-                let sites: Vec<_> = stereo.ligands.iter().copied().map(ligand_color).collect();
-                let parity = color_parity(&sites).map(|odd| odd ^ (n == 1));
-                result[stereo.center.index()].push(StereoColor::Tetrahedral(parity));
-            }
+            let sites: Vec<_> = stereo.ligands.iter().copied().map(ligand_color).collect();
+            let entry = match stereo.configuration {
+                Configuration::Tetrahedral(n) => {
+                    let parity = color_parity(&sites).map(|odd| odd ^ (n == 1));
+                    StereoColor::Tetrahedral(parity)
+                }
+                Configuration::SquarePlanar(_)
+                | Configuration::TrigonalBipyramidal(_)
+                | Configuration::Octahedral(_) => {
+                    StereoColor::Coordination(stereo.configuration.coordination_geometry(&sites))
+                }
+            };
+            result[stereo.center.index()].push(entry);
         }
         for stereo in &molecule.allene_stereo {
             let sites = stereo.ligands.map(ligand_color);
@@ -560,37 +562,59 @@ mod tests {
     fn repository_stereo_records_have_consistent_support() {
         for line in include_str!("../../../tests/data/stereo.smi").lines() {
             let (_, molecule) = parse_molecule(line).unwrap();
-            if molecule
-                .stereo
-                .iter()
-                .any(|s| !matches!(s.configuration, Configuration::Tetrahedral(_)))
-            {
-                assert_eq!(
-                    canonical_smiles(&molecule),
-                    Err(CanonicalError::Write(WriteError::UnsupportedStereo)),
-                    "{line}"
-                );
-            } else {
-                let output =
-                    canonical_smiles(&molecule).unwrap_or_else(|e| panic!("{line}: {e:?}"));
-                assert_eq!(canonical(&output), output, "{line}");
-            }
+            let output = canonical_smiles(&molecule).unwrap_or_else(|e| panic!("{line}: {e:?}"));
+            let (_, reread) = parse_molecule(&output).unwrap();
+            assert_eq!(
+                molecule.exact_match(&reread),
+                Ok(true),
+                "{line} -> {output}"
+            );
+            assert_eq!(canonical(&output), output, "{line}");
         }
     }
 
     #[test]
-    fn unsupported_coordination_is_rejected_in_every_order() {
-        for input in [
-            "F[Pt@SP1](Cl)(Br)I",
-            "Cl[Pt@SP1](Br)(I)F",
-            "S[As@TB5](F)(N)(Cl)Br",
-            "O[Mn@OH28](Cl)(C)(N)F",
+    fn coordination_stereo_is_canonicalized_in_every_order() {
+        for group in [
+            vec![
+                "S[As@TB1](F)(Cl)(Br)N",
+                "S[As@TB2](Br)(Cl)(F)N",
+                "S[As@TB5](F)(N)(Cl)Br",
+                "F[As@TB10](S)(Cl)(N)Br",
+                "F[As@TB15](Cl)(S)(Br)N",
+                "Br[As@TB20](Cl)(S)(F)N",
+            ],
+            vec![
+                "C[Co@](F)(Cl)(Br)(I)S",
+                "F[Co@@](S)(I)(C)(Cl)Br",
+                "S[Co@OH5](F)(I)(Cl)(C)Br",
+                "Br[Co@OH9](C)(S)(Cl)(F)I",
+                "Br[Co@OH12](Cl)(I)(F)(S)C",
+                "Cl[Co@OH15](C)(Br)(F)(I)S",
+                "Cl[Co@OH19](C)(I)(F)(S)Br",
+                "I[Co@OH27](Cl)(Br)(F)(S)C",
+            ],
+            vec![
+                "Cl[Pt@SP1](Cl)(<-[NH3])<-[NH3]",
+                "[NH3]->[Pt@SP1](Cl)(Cl)<-[NH3]",
+            ],
+            vec![
+                "Cl[Pt@SP2](Cl)(<-[NH3])<-[NH3]",
+                "[NH3]->[Pt@SP3](Cl)(Cl)<-[NH3]",
+            ],
         ] {
-            let molecule = parse_molecule(input).unwrap().1;
-            assert_eq!(
-                canonical_smiles(&molecule),
-                Err(CanonicalError::Write(WriteError::UnsupportedStereo))
-            );
+            let expected = canonical(group[0]);
+            for input in group {
+                assert_eq!(canonical(input), expected, "{input}");
+            }
+            assert_eq!(canonical(&expected), expected);
+        }
+        for (a, b) in [
+            ("F[Pt@SP1](Cl)(Br)I", "F[Pt@SP2](Cl)(Br)I"),
+            ("S[As@TB1](F)(Cl)(Br)N", "S[As@TB2](F)(Cl)(Br)N"),
+            ("C[Co@](F)(Cl)(Br)(I)S", "C[Co@@](F)(Cl)(Br)(I)S"),
+        ] {
+            assert_ne!(canonical(a), canonical(b), "{a} vs {b}");
         }
     }
 

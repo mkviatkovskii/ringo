@@ -79,7 +79,7 @@ fn organic(atomic_number: u8, lowercase: bool) -> bool {
 }
 
 /// A stereo ligand, with hydrogens told apart by the atom they are on.
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum Site {
     Ligand(Ligand),
     Hydrogen(NodeIndex),
@@ -660,11 +660,12 @@ impl<'a> Writer<'a> {
                         .ok_or(WriteError::UnsupportedStereo)?;
                     if (n == 1) == odd { "@@" } else { "@" }.to_owned()
                 }
-                // shortcut: kept only when the ligands come out in the same order
-                _ if source != ligands => return Err(WriteError::UnsupportedStereo),
-                Configuration::SquarePlanar(n) => format!("@SP{n}"),
-                Configuration::TrigonalBipyramidal(n) => format!("@TB{n}"),
-                Configuration::Octahedral(n) => format!("@OH{n}"),
+                Configuration::SquarePlanar(_)
+                | Configuration::TrigonalBipyramidal(_)
+                | Configuration::Octahedral(_) => stereo
+                    .configuration
+                    .coordination_tag(&source, &ligands)
+                    .ok_or(WriteError::UnsupportedStereo)?,
             };
             return Ok(Some(tag));
         }

@@ -129,7 +129,11 @@ fn same_stereo(a: &Molecule, b: &Molecule, map: &Mapping) -> Result<(), String> 
             (Configuration::Tetrahedral(before), Configuration::Tetrahedral(after)) => {
                 (before == after) != odd(&source, &t.ligands)?
             }
-            (before, after) => before == after && source == t.ligands,
+            (before, after) => {
+                before.coordination_geometry(&source).is_some()
+                    && before.coordination_geometry(&source)
+                        == after.coordination_geometry(&t.ligands)
+            }
         };
         ensure!(same, "centre {} changed", s.center.index());
     }
@@ -528,13 +532,18 @@ fn every_test_fixture_round_trips() {
 }
 
 #[test]
-fn reordered_centres_without_a_renumbering_are_errors() {
-    let molecule = parse("Cl[Pt@SP1](Cl)(<-[NH3])<-[NH3]");
-    let reversed: Vec<usize> = (0..molecule.count_atoms()).rev().collect();
-    assert_eq!(
-        write(&molecule, &reversed).err(),
-        Some(WriteError::UnsupportedStereo)
-    );
+fn reordered_coordination_centres_preserve_configuration() {
+    for smiles in [
+        "Cl[Pt@SP1](Cl)(<-[NH3])<-[NH3]",
+        "S[As@TB5](F)(N)(Cl)Br",
+        "O[Mn@OH28](Cl)(C)(N)F",
+        "C[Co@](F)(Cl)(Br)(I)S",
+        "O=P([O-])([O-])[O-].[O]=[W@]123[O][W@]45(=[O])[O][W@]6(=[O])([O]1)[O][W@]17(=[O])[O][W@]8(=[O])([O]6)[O][W@]6(=[O])([O]4)[O][W@]4(=[O])([O]5)[O][W@@]5(=[O])([O]2)[O][W@@](=[O])([O]3)([O]1)[O][W@]12(=[O])[O][W@]39(=[O])[O][W@]%10%11(=[O])[O][W@]%12(=[O])([O]3)[O][W@](=[O])([O][W@](=[O])([O]%12)([O][W@](=[O])([O]%10)([O][W@](=[O])([O]%11)([O][W@](=[O])([O]9)([O]1)[O]5)[O]4)[O]6)[O]8)([O]2)[O]7",
+    ] {
+        let molecule = parse(smiles);
+        let reversed: Vec<usize> = (0..molecule.count_atoms()).rev().collect();
+        check(&molecule, &reversed).unwrap_or_else(|e| panic!("{smiles}: {e}"));
+    }
 }
 
 #[test]
