@@ -1,38 +1,93 @@
 use crate::model::bond::BondOrder;
+use crate::model::matcher::{mix64, mix_word};
 use crate::model::molecule::Molecule;
 use fixedbitset::FixedBitSet;
-use petgraph::algo::bridges;
 use petgraph::stable_graph::{EdgeIndex, NodeIndex};
-use petgraph::visit::{EdgeFiltered, EdgeIndexable, EdgeRef, IntoEdgeReferences, NodeIndexable};
-use std::collections::{HashMap, HashSet};
+use petgraph::visit::{EdgeIndexable, EdgeRef, IntoEdgeReferences, NodeIndexable};
 
 const MAX_SHORTEST_RING_PATHS: u8 = 16;
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Default)]
 struct RingVisit {
-    parent: NodeIndex,
+    parent_node: usize,
+    parent_edge: usize,
     distance: usize,
     paths: u8,
+    stamp: u32,
+}
+
+struct Ring {
+    atoms: Vec<NodeIndex>,
+    edges: Vec<EdgeIndex>,
+}
+
+struct CovalentCsr {
+    n: usize,
+    offsets: Vec<usize>,
+    adj: Vec<(usize, usize)>,
+    any_written_aromatic: bool,
+}
+
+impl CovalentCsr {
+    fn neighbors(&self, u: usize) -> &[(usize, usize)] {
+        &self.adj[self.offsets[u]..self.offsets[u + 1]]
+    }
 }
 
 /// What Hückel counting needs to know about the rings an atom is in.
 struct RingContext {
     /// Covalent bonds in any ring, by edge index.
     bonds: FixedBitSet,
-    /// Size of the smallest ring through each ring atom.
-    smallest: HashMap<NodeIndex, usize>,
+    /// Size of the smallest ring through each ring atom (0 if not in any ring).
+    smallest: Vec<usize>,
 }
 
 impl RingContext {
-    fn new(rings: &[Vec<NodeIndex>], bonds: FixedBitSet) -> RingContext {
-        let mut smallest: HashMap<NodeIndex, usize> = HashMap::new();
+    fn new(node_bound: usize, rings: &[Ring], bonds: FixedBitSet) -> RingContext {
+        let mut smallest = vec![0usize; node_bound];
         for ring in rings {
-            for &node in ring {
-                let size = smallest.entry(node).or_insert(ring.len());
-                *size = (*size).min(ring.len());
+            let len = ring.atoms.len();
+            for &node in &ring.atoms {
+                let slot = &mut smallest[node.index()];
+                if *slot == 0 || len < *slot {
+                    *slot = len;
+                }
             }
         }
         RingContext { bonds, smallest }
+    }
+}
+
+/// Hash-indexed deduplication table for sorted ring-edge slices; avoids per-duplicate `Vec` and
+/// `RandomState` `HashSet` allocations in `rings_with_edges`.
+struct SeenRings {
+    entries: Vec<(u64, usize, usize)>,
+    pool: Vec<usize>,
+}
+
+impl SeenRings {
+    fn new() -> Self {
+        Self {
+            entries: Vec::new(),
+            pool: Vec::new(),
+        }
+    }
+
+    fn insert(&mut self, sorted_edges: &[usize]) -> bool {
+        let mut h = sorted_edges.len() as u64;
+        for &e in sorted_edges {
+            h = mix_word(h, e as u64);
+        }
+        let hash = mix64(h);
+        for &(entry_hash, start, len) in &self.entries {
+            if entry_hash == hash && &self.pool[start..start + len] == sorted_edges {
+                return false;
+            }
+        }
+        let start = self.pool.len();
+        self.pool.extend_from_slice(sorted_edges);
+        self.entries.push((hash, start, sorted_edges.len()));
+        true
     }
 }
 
@@ -44,15 +99,27 @@ impl Molecule {
     /// whether it was written in Kekulé form ("C1=CC=CC=C1") or aromatic form ("c1ccccc1").
     pub fn perceive_aromaticity(&mut self) {
         self.exact_cache.take();
-        let ring_bonds = self.covalent_ring_bonds();
-        let rings = self.rings(&ring_bonds);
-        let context = RingContext::new(&rings, ring_bonds);
+        let (ring_bonds, csr) = self.covalent_ring_data();
+        if ring_bonds.is_clear() {
+            if csr.any_written_aromatic {
+                for edge in self.graph.edge_indices().collect::<Vec<_>>() {
+                    if let Some(bond) = self.graph.edge_weight_mut(edge) {
+                        if bond.order == BondOrder::Aromatic {
+                            bond.order = BondOrder::Single;
+                        }
+                    }
+                }
+            }
+            return;
+        }
+        let rings = self.rings_with_edges(&ring_bonds, &csr);
+        let context = RingContext::new(self.graph.node_bound(), &rings, ring_bonds);
 
-        let written: Vec<_> = rings
+        let written: Vec<bool> = rings
             .iter()
             .map(|ring| self.written_aromatic(ring))
             .collect();
-        let protected: Vec<_> = rings
+        let protected: Vec<bool> = rings
             .iter()
             .map(|ring| self.protect_configured_double_bond(ring))
             .collect();
@@ -60,88 +127,159 @@ impl Molecule {
         let mut alone: Vec<bool> = rings
             .iter()
             .zip(&protected)
-            .map(|(ring, &protected)| !protected && self.huckel(ring.iter().copied(), &context))
+            .map(|(ring, &prot)| !prot && self.huckel(ring.atoms.iter().copied(), &context))
             .collect();
         let mut aromatic = alone.clone();
-        // fused pairs such as azulene (5 + 7 atoms) are aromatic only around the
-        // outside; the bond they share stays single
-        let mut pairs = Vec::new();
-        for i in 0..rings.len() {
-            for j in i + 1..rings.len() {
-                // Pairing with a partially written ring would reinterpret the fully written one.
-                if alone[i] || alone[j] || protected[i] || protected[j] || written[i] != written[j]
-                {
-                    continue;
-                }
-                let shared: Vec<NodeIndex> = rings[i]
-                    .iter()
-                    .filter(|node| rings[j].contains(node))
-                    .copied()
-                    .collect();
-                if let [a, b] = shared[..] {
-                    if let Some((edge, _)) = self.graph.find_edge_undirected(a, b) {
-                        pairs.push((i, j, edge));
-                    }
-                }
-            }
-        }
-        // when one ring could pair with either of two others, as in phenalene, a shared bond
-        // written `-` picks the pair, so a written molecule reads back the same in any order
-        pairs.sort_by_key(|&(_, _, edge)| self.graph[edge].order == BondOrder::Aromatic);
-        let mut shared_bonds: HashSet<EdgeIndex> = HashSet::new();
-        for (i, j, edge) in pairs {
-            if aromatic[i] || aromatic[j] {
-                continue;
-            }
-            let union: HashSet<NodeIndex> = rings[i].iter().chain(&rings[j]).copied().collect();
-            if self.huckel(union.into_iter(), &context) {
-                aromatic[i] = true;
-                aromatic[j] = true;
-                shared_bonds.insert(edge);
-            }
-        }
-        for (i, &written) in written.iter().enumerate() {
-            if !aromatic[i] && written {
+        let mut shared_bonds = FixedBitSet::with_capacity(self.graph.edge_bound());
+        self.mark_fused_aromatic_pairs(
+            &rings,
+            &written,
+            &protected,
+            &alone,
+            &context,
+            &mut aromatic,
+            &mut shared_bonds,
+        );
+        for (i, &is_written) in written.iter().enumerate() {
+            if !aromatic[i] && is_written {
                 aromatic[i] = true;
                 alone[i] = true;
             }
         }
 
-        let mut aromatic_bonds: HashSet<EdgeIndex> = HashSet::new();
+        let mut aromatic_bonds = FixedBitSet::with_capacity(self.graph.edge_bound());
         for (i, ring) in rings.iter().enumerate().filter(|&(i, _)| aromatic[i]) {
-            aromatic_bonds.extend(
-                self.ring_edges(ring)
-                    .filter(|edge| alone[i] || !shared_bonds.contains(edge)),
-            );
+            for &edge in &ring.edges {
+                if alone[i] || !shared_bonds.contains(edge.index()) {
+                    aromatic_bonds.insert(edge.index());
+                }
+            }
         }
-        // A shorter path through a fused ring can hide a fully written aromatic cycle.
-        let missed = |edge: &EdgeIndex| {
-            context.bonds.contains(edge.index())
-                && self.graph[*edge].order == BondOrder::Aromatic
-                && !aromatic_bonds.contains(edge)
-                && !shared_bonds.contains(edge)
-        };
-        let missed: Vec<_> = self.graph.edge_indices().filter(missed).collect();
-        if !missed.is_empty() {
-            let written = EdgeFiltered::from_fn(&self.graph, |edge| {
-                edge.weight().order == BondOrder::Aromatic
-            });
-            let written_bridges: HashSet<_> = bridges(&written).map(|edge| edge.id()).collect();
-            aromatic_bonds.extend(
-                missed
-                    .into_iter()
-                    .filter(|edge| !written_bridges.contains(edge)),
-            );
+        self.recover_hidden_aromatic_bonds(&context.bonds, &shared_bonds, &mut aromatic_bonds);
+        self.apply_aromaticity(&aromatic_bonds);
+    }
+
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "internal helper splitting fused-pair logic cleanly out of perceive_aromaticity"
+    )]
+    fn mark_fused_aromatic_pairs(
+        &self,
+        rings: &[Ring],
+        written: &[bool],
+        protected: &[bool],
+        alone: &[bool],
+        context: &RingContext,
+        aromatic: &mut [bool],
+        shared_bonds: &mut FixedBitSet,
+    ) {
+        if rings.len() < 2 {
+            return;
         }
-        for &edge in &aromatic_bonds {
-            if let Some((a, b)) = self.graph.edge_endpoints(edge) {
+        let mut atom_mark = vec![0u32; self.graph.node_bound()];
+        let mut epoch = 0u32;
+        let mut pairs = Vec::new();
+        for i in 0..rings.len() {
+            if alone[i] || protected[i] {
+                continue;
+            }
+            epoch = next_epoch(&mut atom_mark, epoch);
+            for &a in &rings[i].atoms {
+                atom_mark[a.index()] = epoch;
+            }
+            for j in i + 1..rings.len() {
+                if alone[j] || protected[j] || written[i] != written[j] {
+                    continue;
+                }
+                let mut shared_count = 0usize;
+                let mut shared_a = NodeIndex::end();
+                let mut shared_b = NodeIndex::end();
+                for &node in &rings[j].atoms {
+                    if atom_mark[node.index()] == epoch {
+                        match shared_count {
+                            0 => shared_a = node,
+                            1 => shared_b = node,
+                            _ => {}
+                        }
+                        shared_count += 1;
+                        if shared_count > 2 {
+                            break;
+                        }
+                    }
+                }
+                if shared_count == 2 {
+                    if let Some((edge, _)) = self.graph.find_edge_undirected(shared_a, shared_b) {
+                        pairs.push((i, j, edge));
+                    }
+                }
+            }
+        }
+        if pairs.is_empty() {
+            return;
+        }
+        // when one ring could pair with either of two others, as in phenalene, a shared bond
+        // written `-` picks the pair, so a written molecule reads back the same in any order
+        pairs.sort_by_key(|&(_, _, edge)| self.graph[edge].order == BondOrder::Aromatic);
+        let mut union = Vec::new();
+        for (i, j, edge) in pairs {
+            if aromatic[i] || aromatic[j] {
+                continue;
+            }
+            epoch = next_epoch(&mut atom_mark, epoch);
+            union.clear();
+            for &node in rings[i].atoms.iter().chain(&rings[j].atoms) {
+                let slot = &mut atom_mark[node.index()];
+                if *slot != epoch {
+                    *slot = epoch;
+                    union.push(node);
+                }
+            }
+            if self.huckel(union.iter().copied(), context) {
+                aromatic[i] = true;
+                aromatic[j] = true;
+                shared_bonds.insert(edge.index());
+            }
+        }
+    }
+
+    fn recover_hidden_aromatic_bonds(
+        &self,
+        ring_bonds: &FixedBitSet,
+        shared_bonds: &FixedBitSet,
+        aromatic_bonds: &mut FixedBitSet,
+    ) {
+        let missed: Vec<EdgeIndex> = self
+            .graph
+            .edge_indices()
+            .filter(|&edge| {
+                let idx = edge.index();
+                ring_bonds.contains(idx)
+                    && self.graph[edge].order == BondOrder::Aromatic
+                    && !aromatic_bonds.contains(idx)
+                    && !shared_bonds.contains(idx)
+            })
+            .collect();
+        if missed.is_empty() {
+            return;
+        }
+        let written_ring_bonds = self.bridges_filtered(|bond| bond == BondOrder::Aromatic);
+        for edge in missed {
+            if written_ring_bonds.contains(edge.index()) {
+                aromatic_bonds.insert(edge.index());
+            }
+        }
+    }
+
+    fn apply_aromaticity(&mut self, aromatic_bonds: &FixedBitSet) {
+        for idx in aromatic_bonds.ones() {
+            if let Some((a, b)) = self.graph.edge_endpoints(EdgeIndex::new(idx)) {
                 self.graph[a].aromatic = true;
                 self.graph[b].aromatic = true;
             }
         }
         for edge in self.graph.edge_indices().collect::<Vec<_>>() {
             if let Some(bond) = self.graph.edge_weight_mut(edge) {
-                if aromatic_bonds.contains(&edge) {
+                if aromatic_bonds.contains(edge.index()) {
                     bond.order = BondOrder::Aromatic;
                 } else if bond.order == BondOrder::Aromatic {
                     // like the bond joining biphenyl's rings, or fluorene's in its 5-ring
@@ -154,21 +292,24 @@ impl Molecule {
     /// Whether every bond of the ring was written aromatic: with no symbol between lowercase
     /// atoms, or with `:`. A `-` or `=` stands as written, so the 4-ring of biphenylene,
     /// `c1ccc2c(c1)-c1ccccc1-2`, isn't aromatic although its atoms are.
-    fn written_aromatic(&self, ring: &[NodeIndex]) -> bool {
-        self.ring_edges(ring)
-            .all(|edge| self.graph[edge].order == BondOrder::Aromatic)
+    fn written_aromatic(&self, ring: &Ring) -> bool {
+        ring.edges
+            .iter()
+            .all(|&edge| self.graph[edge].order == BondOrder::Aromatic)
     }
 
     // Mixed aromatic and Kekulé notation can explicitly retain a configured double bond.
-    fn protect_configured_double_bond(&self, ring: &[NodeIndex]) -> bool {
+    fn protect_configured_double_bond(&self, ring: &Ring) -> bool {
         !self.bond_stereo.is_empty()
-            && self
-                .ring_edges(ring)
-                .any(|edge| self.bond_stereo.iter().any(|s| s.bond == edge))
-            && (ring.iter().any(|&node| self.graph[node].aromatic)
-                || self
-                    .ring_edges(ring)
-                    .any(|edge| self.graph[edge].order == BondOrder::Aromatic))
+            && ring
+                .edges
+                .iter()
+                .any(|&edge| self.bond_stereo.iter().any(|s| s.bond == edge))
+            && (ring.atoms.iter().any(|&node| self.graph[node].aromatic)
+                || ring
+                    .edges
+                    .iter()
+                    .any(|&edge| self.graph[edge].order == BondOrder::Aromatic))
     }
 
     /// Whether these atoms hold 4n+2 π electrons, each of them giving some.
@@ -246,7 +387,7 @@ impl Molecule {
             // but a neutral O or S between two single bonds only bridges a macrocycle
             // (9 or more atoms, as in RDKit since 2026.09, rdkit/rdkit#9398): the
             // lactone ring of CHEMBL2004566 keeps its C=N double bond
-            (8 | 16, 0) if neighbours == 2 && context.smallest.get(&node) >= Some(&9) => None,
+            (8 | 16, 0) if neighbours == 2 && context.smallest[node.index()] >= 9 => None,
             (7, -1) | (8 | 16 | 34 | 52, 0) if neighbours == 2 => Some(2),
             // an empty p orbital: tropylium, boron
             (6, 1) | (5, 0) if neighbours == 3 => Some(0),
@@ -256,125 +397,246 @@ impl Molecule {
         }
     }
 
-    /// The bonds around a ring, from each atom to the next.
-    fn ring_edges<'a>(&'a self, ring: &'a [NodeIndex]) -> impl Iterator<Item = EdgeIndex> + 'a {
-        ring.iter()
-            .zip(ring.iter().cycle().skip(1))
-            .filter_map(|(&a, &b)| self.graph.find_edge_undirected(a, b).map(|(edge, _)| edge))
+    fn build_csr_filtered(&self, keep: impl Fn(BondOrder) -> bool) -> (FixedBitSet, CovalentCsr) {
+        let graph = &self.graph;
+        let n = graph.node_bound();
+        let mut deg = vec![0usize; n];
+        let mut ring_bonds = FixedBitSet::with_capacity(graph.edge_bound());
+        let mut any_written_aromatic = false;
+        let mut edge_count = 0usize;
+        for edge in graph.edge_references() {
+            let order = edge.weight().order;
+            if order == BondOrder::Aromatic {
+                any_written_aromatic = true;
+            }
+            if !keep(order) {
+                continue;
+            }
+            let (u, v) = (edge.source().index(), edge.target().index());
+            deg[u] += 1;
+            deg[v] += 1;
+            ring_bonds.insert(edge.id().index());
+            edge_count += 1;
+        }
+        if edge_count == 0 {
+            return (
+                ring_bonds,
+                CovalentCsr {
+                    n,
+                    offsets: vec![0; n + 1],
+                    adj: Vec::new(),
+                    any_written_aromatic,
+                },
+            );
+        }
+        let mut offsets = Vec::with_capacity(n + 1);
+        offsets.push(0);
+        for &d in &deg {
+            offsets.push(offsets.last().copied().unwrap_or(0) + d);
+        }
+        let mut cursor = offsets[..n].to_vec();
+        let mut adj = vec![(0usize, 0usize); offsets[n]];
+        for edge in graph.edge_references() {
+            if !keep(edge.weight().order) {
+                continue;
+            }
+            let e_idx = edge.id().index();
+            let (u, v) = (edge.source().index(), edge.target().index());
+            adj[cursor[u]] = (e_idx, v);
+            cursor[u] += 1;
+            adj[cursor[v]] = (e_idx, u);
+            cursor[v] += 1;
+        }
+        (
+            ring_bonds,
+            CovalentCsr {
+                n,
+                offsets,
+                adj,
+                any_written_aromatic,
+            },
+        )
+    }
+
+    fn bridges_filtered(&self, keep: impl Fn(BondOrder) -> bool) -> FixedBitSet {
+        let (ring_bonds, csr) = self.covalent_ring_data_with(keep);
+        let _ = csr;
+        ring_bonds
+    }
+
+    fn covalent_ring_data_with(
+        &self,
+        keep: impl Fn(BondOrder) -> bool,
+    ) -> (FixedBitSet, CovalentCsr) {
+        let (mut ring_bonds, csr) = self.build_csr_filtered(keep);
+        let n = csr.n;
+        if csr.adj.is_empty() {
+            return (ring_bonds, csr);
+        }
+        let mut tin = vec![0u32; n];
+        let mut low = vec![0u32; n];
+        let mut timer = 0u32;
+        let mut stack: Vec<(usize, usize, usize, usize)> = Vec::new();
+        for start in 0..n {
+            if csr.offsets[start] == csr.offsets[start + 1] || tin[start] != 0 {
+                continue;
+            }
+            timer += 1;
+            tin[start] = timer;
+            low[start] = timer;
+            stack.push((
+                start,
+                csr.offsets[start],
+                csr.offsets[start + 1],
+                usize::MAX,
+            ));
+            while let Some(top) = stack.last_mut() {
+                let u = top.0;
+                if top.1 < top.2 {
+                    let (e_idx, v) = csr.adj[top.1];
+                    top.1 += 1;
+                    if e_idx == top.3 {
+                        continue;
+                    }
+                    if tin[v] != 0 {
+                        low[u] = low[u].min(tin[v]);
+                    } else {
+                        timer += 1;
+                        tin[v] = timer;
+                        low[v] = timer;
+                        stack.push((v, csr.offsets[v], csr.offsets[v + 1], e_idx));
+                    }
+                } else {
+                    let child_low = low[u];
+                    let p_edge = top.3;
+                    stack.pop();
+                    if let Some(&(p, _, _, _)) = stack.last() {
+                        low[p] = low[p].min(child_low);
+                        if child_low > tin[p] {
+                            ring_bonds.set(p_edge, false);
+                        }
+                    }
+                }
+            }
+        }
+        (ring_bonds, csr)
+    }
+
+    fn covalent_ring_data(&self) -> (FixedBitSet, CovalentCsr) {
+        self.covalent_ring_data_with(|order| order != BondOrder::Dative)
     }
 
     /// Covalent bonds in cycles: every covalent bond except bridges.
     pub(crate) fn covalent_ring_bonds(&self) -> FixedBitSet {
-        let graph = &self.graph;
-        let mut ring_bonds = FixedBitSet::with_capacity(graph.edge_bound());
-        let covalent =
-            EdgeFiltered::from_fn(graph, |edge| edge.weight().order != BondOrder::Dative);
-        for edge in graph
-            .edge_indices()
-            .filter(|&edge| graph[edge].order != BondOrder::Dative)
-        {
-            ring_bonds.insert(edge.index());
-        }
-        for edge in bridges(&covalent) {
-            ring_bonds.remove(edge.id().index());
-        }
-        ring_bonds
+        self.covalent_ring_data().0
     }
 
     /// Shortest rings through every covalent ring bond, without duplicates.
+    #[cfg(test)]
     fn rings(&self, ring_bonds: &FixedBitSet) -> Vec<Vec<NodeIndex>> {
-        let mut seen = HashSet::new();
+        let (_, csr) = self.build_csr_filtered(|order| order != BondOrder::Dative);
+        self.rings_with_edges(ring_bonds, &csr)
+            .into_iter()
+            .map(|r| r.atoms)
+            .collect()
+    }
+
+    fn rings_with_edges(&self, ring_bonds: &FixedBitSet, csr: &CovalentCsr) -> Vec<Ring> {
+        let n = csr.n;
+        let mut ring_deg = vec![0u16; n];
+        for idx in ring_bonds.ones() {
+            if let Some((a, b)) = self.graph.edge_endpoints(EdgeIndex::new(idx)) {
+                ring_deg[a.index()] += 1;
+                ring_deg[b.index()] += 1;
+            }
+        }
+
+        let mut seen = SeenRings::new();
         let mut rings = Vec::new();
-        let mut record = |ring: Vec<NodeIndex>| {
-            let mut key: Vec<_> = self.ring_edges(&ring).collect();
-            key.sort_unstable();
-            if seen.insert(key) {
-                rings.push(ring);
+        let mut key_buf = Vec::with_capacity(16);
+        let mut record = |atoms: Vec<NodeIndex>, edges: Vec<EdgeIndex>| {
+            key_buf.clear();
+            key_buf.extend(edges.iter().map(|e| e.index()));
+            key_buf.sort_unstable();
+            if seen.insert(&key_buf) {
+                rings.push(Ring { atoms, edges });
             }
         };
-        let mut visited = vec![None; self.graph.node_bound()];
+
+        let mut handled = FixedBitSet::with_capacity(self.graph.edge_bound());
+        let mut visited = vec![RingVisit::default(); n];
+        let mut stamp = 0u32;
         let mut queue = Vec::new();
-        for edge in (&self.graph)
-            .edge_references()
-            .filter(|edge| ring_bonds.contains(edge.id().index()))
-        {
-            let (from, to) = (edge.source(), edge.target());
-            let Some(ring) = self.shortest_path_without(
+        let mut path_atoms = Vec::new();
+        let mut path_edges = Vec::new();
+
+        for e_idx in ring_bonds.ones() {
+            if handled.contains(e_idx) {
+                continue;
+            }
+            let Some((from_node, to_node)) = self.graph.edge_endpoints(EdgeIndex::new(e_idx))
+            else {
+                continue;
+            };
+            let (from, to) = (from_node.index(), to_node.index());
+            handled.insert(e_idx);
+            mark_deg2_chain(csr, ring_bonds, &ring_deg, &mut handled, from, e_idx);
+            mark_deg2_chain(csr, ring_bonds, &ring_deg, &mut handled, to, e_idx);
+
+            let Some(paths) = shortest_path_csr(
+                csr,
                 from,
                 to,
-                edge.id(),
+                e_idx,
                 ring_bonds,
                 &mut visited,
+                &mut stamp,
                 &mut queue,
+                &mut path_atoms,
+                &mut path_edges,
             ) else {
                 continue;
             };
-            let paths = visited[to.index()].map_or(1, |visit| visit.paths);
             match paths {
-                1 => record(ring),
+                1 => {
+                    record(path_atoms.clone(), path_edges.clone());
+                }
                 2..=MAX_SHORTEST_RING_PATHS => {
-                    self.visit_shortest_rings(
+                    visit_shortest_rings_csr(
+                        csr,
                         from,
                         to,
-                        edge.id(),
+                        e_idx,
                         ring_bonds,
                         &visited,
+                        stamp,
                         &mut record,
                     );
                 }
                 // shortcut: keep two representatives for many tied paths, revisit if these
                 // macrocycles need order-independent perception.
                 _ => {
-                    record(ring);
-                    if let Some(reverse) = self.shortest_path_without(
+                    record(path_atoms.clone(), path_edges.clone());
+                    if shortest_path_csr(
+                        csr,
                         to,
                         from,
-                        edge.id(),
+                        e_idx,
                         ring_bonds,
                         &mut visited,
+                        &mut stamp,
                         &mut queue,
-                    ) {
-                        record(reverse);
+                        &mut path_atoms,
+                        &mut path_edges,
+                    )
+                    .is_some()
+                    {
+                        record(path_atoms.clone(), path_edges.clone());
                     }
                 }
             }
         }
         rings
-    }
-
-    /// Walk the shortest-path DAG backward, visiting only nodes on a shortest path.
-    fn visit_shortest_rings(
-        &self,
-        from: NodeIndex,
-        to: NodeIndex,
-        skip: EdgeIndex,
-        ring_bonds: &FixedBitSet,
-        visited: &[Option<RingVisit>],
-        record: &mut impl FnMut(Vec<NodeIndex>),
-    ) {
-        let predecessors = |node: NodeIndex| {
-            let distance = visited[node.index()].map_or(0, |visit| visit.distance);
-            self.graph.edges(node).filter_map(move |edge| {
-                if edge.id() == skip || !ring_bonds.contains(edge.id().index()) {
-                    return None;
-                }
-                let next = edge.target();
-                visited[next.index()]
-                    .filter(|visit| visit.distance + 1 == distance)
-                    .map(|_| next)
-            })
-        };
-        let mut path = vec![(to, predecessors(to))];
-        while let Some((node, previous)) = path.last_mut() {
-            if *node == from {
-                record(path.iter().map(|&(node, _)| node).collect());
-                path.pop();
-            } else if let Some(next) = previous.next() {
-                path.push((next, predecessors(next)));
-            } else {
-                path.pop();
-            }
-        }
     }
 
     /// The shortest ring of covalent bonds through a bond, as its atoms; `ring_bonds`
@@ -388,71 +650,188 @@ impl Molecule {
         if !ring_bonds.contains(edge.index()) {
             return None;
         }
-        let mut visited = vec![None; self.graph.node_bound()];
-        self.shortest_path_without(a, b, edge, ring_bonds, &mut visited, &mut Vec::new())
+        let (_, csr) = self.build_csr_filtered(|order| order != BondOrder::Dative);
+        let mut visited = vec![RingVisit::default(); csr.n];
+        let mut stamp = 0u32;
+        let mut queue = Vec::new();
+        let mut atoms = Vec::new();
+        let mut edges = Vec::new();
+        shortest_path_csr(
+            &csr,
+            a.index(),
+            b.index(),
+            edge.index(),
+            ring_bonds,
+            &mut visited,
+            &mut stamp,
+            &mut queue,
+            &mut atoms,
+            &mut edges,
+        )
+        .map(|_| atoms)
     }
+}
 
-    /// Breadth-first search from `from` to `to` that may not use `skip`; the path
-    /// closes into a ring through `skip`.
-    fn shortest_path_without(
-        &self,
-        from: NodeIndex,
-        to: NodeIndex,
-        skip: EdgeIndex,
-        ring_bonds: &FixedBitSet,
-        visited: &mut [Option<RingVisit>],
-        queue: &mut Vec<NodeIndex>,
-    ) -> Option<Vec<NodeIndex>> {
-        // Retain every queued node, including those left at an early return, so
-        // the next search clears only the entries this search touched.
-        for node in queue.drain(..) {
-            visited[node.index()] = None;
+fn next_epoch(marks: &mut [u32], epoch: u32) -> u32 {
+    let next = epoch.wrapping_add(1);
+    if next == 0 {
+        marks.fill(0);
+        return 1;
+    }
+    next
+}
+
+/// Bonds along a maximal degree-2 chain in `ring_bonds` lie in the exact same set of simple
+/// cycles, so only one representative bond in the chain needs a shortest-path search.
+fn mark_deg2_chain(
+    csr: &CovalentCsr,
+    ring_bonds: &FixedBitSet,
+    ring_deg: &[u16],
+    handled: &mut FixedBitSet,
+    start: usize,
+    start_edge: usize,
+) {
+    let mut cur = start;
+    let mut prev_edge = start_edge;
+    while ring_deg[cur] == 2 {
+        let Some(&(next_edge, next_node)) = csr
+            .neighbors(cur)
+            .iter()
+            .find(|&&(e_idx, _)| e_idx != prev_edge && ring_bonds.contains(e_idx))
+        else {
+            break;
+        };
+        if handled.contains(next_edge) {
+            break;
         }
-        visited[from.index()] = Some(RingVisit {
-            parent: from,
-            distance: 0,
-            paths: 1,
-        });
-        queue.push(from);
-        let mut head = 0;
-        while head < queue.len() {
-            let node = queue[head];
-            head += 1;
-            if node == to {
-                let mut path = vec![to];
-                let mut current = to;
-                while current != from {
-                    current = visited[current.index()]?.parent;
-                    path.push(current);
-                }
-                return Some(path);
+        handled.insert(next_edge);
+        prev_edge = next_edge;
+        cur = next_node;
+    }
+}
+
+/// Breadth-first search from `from` to `to` in `csr` that may not use `skip`; writes the
+/// shortest cycle's atoms and edges into `out_atoms` / `out_edges` and returns the path
+/// multiplicity at `to`.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "reuses caller scratch buffers across all ring bonds without heap allocation"
+)]
+fn shortest_path_csr(
+    csr: &CovalentCsr,
+    from: usize,
+    to: usize,
+    skip: usize,
+    ring_bonds: &FixedBitSet,
+    visited: &mut [RingVisit],
+    stamp: &mut u32,
+    queue: &mut Vec<usize>,
+    out_atoms: &mut Vec<NodeIndex>,
+    out_edges: &mut Vec<EdgeIndex>,
+) -> Option<u8> {
+    *stamp = stamp.wrapping_add(1);
+    if *stamp == 0 {
+        visited.fill(RingVisit::default());
+        *stamp = 1;
+    }
+    let cur_stamp = *stamp;
+    queue.clear();
+    visited[from] = RingVisit {
+        parent_node: from,
+        parent_edge: skip,
+        distance: 0,
+        paths: 1,
+        stamp: cur_stamp,
+    };
+    queue.push(from);
+    let mut head = 0usize;
+    while head < queue.len() {
+        let u = queue[head];
+        head += 1;
+        if u == to {
+            out_atoms.clear();
+            out_edges.clear();
+            out_atoms.push(NodeIndex::new(to));
+            out_edges.push(EdgeIndex::new(skip));
+            let mut cur = to;
+            while cur != from {
+                let v = visited[cur];
+                out_edges.push(EdgeIndex::new(v.parent_edge));
+                cur = v.parent_node;
+                out_atoms.push(NodeIndex::new(cur));
             }
-            let visit = visited[node.index()]?;
-            let distance = visit.distance + 1;
-            for edge in self
-                .graph
-                .edges(node)
-                .filter(|edge| edge.id() != skip && ring_bonds.contains(edge.id().index()))
-            {
-                let next = edge.target();
-                match &mut visited[next.index()] {
-                    Some(next_visit) if next_visit.distance == distance => {
-                        next_visit.paths =
-                            (next_visit.paths + visit.paths).min(MAX_SHORTEST_RING_PATHS + 1);
-                    }
-                    Some(_) => {}
-                    slot @ None => {
-                        *slot = Some(RingVisit {
-                            parent: node,
-                            distance,
-                            paths: visit.paths,
-                        });
-                        queue.push(next);
-                    }
-                }
+            return Some(visited[to].paths);
+        }
+        let visit = visited[u];
+        let distance = visit.distance + 1;
+        for &(e_idx, next) in csr.neighbors(u) {
+            if e_idx == skip || !ring_bonds.contains(e_idx) {
+                continue;
+            }
+            let slot = &mut visited[next];
+            if slot.stamp != cur_stamp {
+                *slot = RingVisit {
+                    parent_node: u,
+                    parent_edge: e_idx,
+                    distance,
+                    paths: visit.paths,
+                    stamp: cur_stamp,
+                };
+                queue.push(next);
+            } else if slot.distance == distance {
+                slot.paths = (slot.paths + visit.paths).min(MAX_SHORTEST_RING_PATHS + 1);
             }
         }
-        None
+    }
+    None
+}
+
+/// Walk the shortest-path DAG backward, visiting only nodes on a shortest path.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "passes caller scratch state without per-call wrapper struct"
+)]
+fn visit_shortest_rings_csr(
+    csr: &CovalentCsr,
+    from: usize,
+    to: usize,
+    skip: usize,
+    ring_bonds: &FixedBitSet,
+    visited: &[RingVisit],
+    stamp: u32,
+    record: &mut impl FnMut(Vec<NodeIndex>, Vec<EdgeIndex>),
+) {
+    let mut path: Vec<(usize, usize, usize)> = vec![(to, skip, 0)];
+    while let Some(&mut (node, _, ref mut cursor)) = path.last_mut() {
+        if node == from {
+            let atoms = path.iter().map(|&(u, _, _)| NodeIndex::new(u)).collect();
+            let edges = path
+                .iter()
+                .map(|&(_, e_idx, _)| EdgeIndex::new(e_idx))
+                .collect();
+            record(atoms, edges);
+            path.pop();
+            continue;
+        }
+        let nbrs = csr.neighbors(node);
+        let distance = visited[node].distance;
+        let mut pushed = false;
+        while *cursor < nbrs.len() {
+            let (e_idx, next) = nbrs[*cursor];
+            *cursor += 1;
+            if e_idx == skip || !ring_bonds.contains(e_idx) {
+                continue;
+            }
+            let nv = visited[next];
+            if nv.stamp == stamp && nv.distance + 1 == distance {
+                path.push((next, e_idx, 0));
+                pushed = true;
+                break;
+            }
+        }
+        if !pushed {
+            path.pop();
+        }
     }
 }
 
