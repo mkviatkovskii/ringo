@@ -157,8 +157,12 @@ impl<'a> Writer<'a> {
         };
         for node in graph.node_indices() {
             let atom = &graph[node];
-            writer.lowercase[node.index()] =
-                atom.aromatic && has_lowercase(atom.element.atomic_number);
+            writer.lowercase[node.index()] = atom.aromatic
+                && (has_lowercase(atom.element.atomic_number)
+                    || (atom.element.atomic_number == 14
+                        && graph
+                            .edges(node)
+                            .all(|edge| edge.weight().order != BondOrder::Aromatic)));
         }
 
         // depth first, so every bond outside the tree joins an atom to one written before it

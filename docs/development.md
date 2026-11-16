@@ -62,3 +62,5 @@ Aromaticity perception also excludes atoms with cumulated or mixed ring/exocycli
 double bonds and non-3-coordinate charged carbon or neutral boron from Hückel
 electron counting; rebuild indexes so those rings keep their Kekulé bonds,
 fingerprints, and exact search keys.
+Bracketed `[si]` is now accepted on input (written as `[Si]` with `:` bonds when
+aromatic, or `[si]` when retaining non-aromatic single bonds).
