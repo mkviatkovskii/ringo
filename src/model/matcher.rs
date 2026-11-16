@@ -1,9 +1,23 @@
 //! Symmetry-pruned graph and subgraph matching primitives shared by exact search and future
 //! substructure search (#57).
 
-use crate::descriptors::fingerprints::ecfp::fnv1a;
 use crate::model::bond::BondOrder;
 use std::collections::BTreeMap;
+
+/// Fast, platform-independent 64-bit integer mixer (`SplitMix64` finalizer).
+#[inline]
+pub(crate) const fn mix64(mut x: u64) -> u64 {
+    x = x.wrapping_add(0x9e37_79b9_7f4a_7c15);
+    x = (x ^ (x >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+    x = (x ^ (x >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+    x ^ (x >> 31)
+}
+
+/// Folds a 64-bit word into a running 64-bit hash state without byte-by-byte iteration.
+#[inline]
+pub(crate) const fn mix_word(state: u64, word: u64) -> u64 {
+    state.rotate_left(13).wrapping_mul(0x517c_c1b7_2722_0a95) ^ word
+}
 
 /// Packs bond order and donor orientation into a single comparable byte.
 #[must_use]
@@ -27,6 +41,10 @@ pub(crate) struct CsrGraph {
 }
 
 impl CsrGraph {
+    #[allow(
+        dead_code,
+        reason = "convenience builder for #57 substructure query/target construction"
+    )]
     pub(crate) fn from_adj(n: usize, adj: &[Vec<(u8, usize)>], base_hashes: Vec<u64>) -> Self {
         let mut offsets = Vec::with_capacity(n + 1);
         let total_edges: usize = adj.iter().map(Vec::len).sum();
@@ -181,57 +199,72 @@ fn union_roots(parent: &mut [usize], a: usize, b: usize) {
     }
 }
 
-/// Refines a `CsrGraph` to stable color hashes `(colors, hash_per_color)`, returning dense
-/// vertex color IDs `0..distinct` sorted canonically by vertex hash history so two isomorphic
-/// graphs get identical `(sorted_hash_counts)`.
-pub(crate) fn refine_hash_signature(graph: &CsrGraph) -> (Vec<usize>, Vec<u64>) {
+/// Refines a `CsrGraph` to stable color hashes `(colors, color_hashes, color_hist)`, returning
+/// dense vertex color IDs `0..distinct` sorted canonically so isomorphic graphs get identical
+/// `color_hist`.
+pub(crate) fn refine_hash_signature(graph: &CsrGraph) -> (Vec<usize>, Vec<u64>, Vec<(u64, usize)>) {
     let n = graph.n;
     if n == 0 {
-        return (Vec::new(), Vec::new());
+        return (Vec::new(), Vec::new(), Vec::new());
     }
     let mut hashes = graph.base_hashes.clone();
-    let mut nbrs: Vec<u64> = Vec::new();
-    let mut next_hashes = vec![0u64; n];
-    let mut distinct = count_distinct_u64(&hashes);
-    for _ in 0..n {
-        for u in 0..n {
-            nbrs.clear();
-            for &(code, v) in graph.neighbors(u) {
-                let edge_mix = fnv1a([u64::from(code), hashes[v]]);
-                nbrs.push(edge_mix);
+    let mut scratch = Vec::with_capacity(n);
+    let mut distinct = count_distinct_u64(&mut scratch, &hashes);
+    if distinct < n {
+        let mut nbrs: Vec<u64> = Vec::with_capacity(8);
+        let mut next_hashes = vec![0u64; n];
+        for _ in 0..n {
+            for u in 0..n {
+                nbrs.clear();
+                for &(code, v) in graph.neighbors(u) {
+                    let edge_mix =
+                        mix64(hashes[v] ^ (u64::from(code).wrapping_mul(0x9e37_79b9_7f4a_7c15)));
+                    nbrs.push(edge_mix);
+                }
+                if nbrs.len() > 1 {
+                    nbrs.sort_unstable();
+                }
+                let mut h = mix_word(hashes[u], nbrs.len() as u64);
+                for &edge_mix in &nbrs {
+                    h = mix_word(h, edge_mix);
+                }
+                next_hashes[u] = mix64(h);
             }
-            nbrs.sort_unstable();
-            next_hashes[u] = fnv1a(
-                [hashes[u], nbrs.len() as u64]
-                    .into_iter()
-                    .chain(nbrs.iter().copied()),
-            );
+            std::mem::swap(&mut hashes, &mut next_hashes);
+            let next_distinct = count_distinct_u64(&mut scratch, &hashes);
+            if next_distinct <= distinct {
+                break;
+            }
+            distinct = next_distinct;
+            if distinct >= n {
+                break;
+            }
         }
-        std::mem::swap(&mut hashes, &mut next_hashes);
-        let next_distinct = count_distinct_u64(&hashes);
-        if next_distinct <= distinct {
-            break;
-        }
-        distinct = next_distinct;
     }
     let mut order: Vec<usize> = (0..n).collect();
     order.sort_unstable_by_key(|&u| hashes[u]);
     let mut colors = vec![0usize; n];
-    let mut color_hashes = Vec::with_capacity(n);
+    let mut color_hashes = Vec::with_capacity(distinct);
+    let mut color_hist: Vec<(u64, usize)> = Vec::with_capacity(distinct);
     for (pos, &u) in order.iter().enumerate() {
-        if pos == 0 || hashes[u] != hashes[order[pos - 1]] {
-            color_hashes.push(hashes[u]);
+        let h = hashes[u];
+        if pos == 0 || h != hashes[order[pos - 1]] {
+            color_hashes.push(h);
+            color_hist.push((h, 1));
+        } else if let Some(last) = color_hist.last_mut() {
+            last.1 += 1;
         }
         colors[u] = color_hashes.len() - 1;
     }
-    (colors, color_hashes)
+    (colors, color_hashes, color_hist)
 }
 
-fn count_distinct_u64(values: &[u64]) -> usize {
-    let mut copy = values.to_vec();
-    copy.sort_unstable();
-    copy.dedup();
-    copy.len()
+fn count_distinct_u64(scratch: &mut Vec<u64>, values: &[u64]) -> usize {
+    scratch.clear();
+    scratch.extend_from_slice(values);
+    scratch.sort_unstable();
+    scratch.dedup();
+    scratch.len()
 }
 
 struct SymEngine<'a> {
@@ -542,6 +575,10 @@ pub(crate) trait EmbeddingSpec {
 
 /// Computes a connected, MRV-ordered traversal sequence `(q_vertex, mapped_parent_idx)` over
 /// `q_graph` starting from vertices with the fewest candidates (`domain_sizes`).
+/// Computes a connected, MRV-ordered traversal sequence `(q_vertex, mapped_parent_idx)` over
+/// `q_graph` starting from vertices with the fewest candidates (`domain_sizes`), breaking ties
+/// by highest degree and most-recently-reached neighbor (depth-first within a domain tier) so
+/// cyclic/chiral substructures close before sibling symmetric branches fan out.
 pub(crate) fn plan_query_order(
     q_graph: &CsrGraph,
     domain_sizes: &[usize],
@@ -549,6 +586,8 @@ pub(crate) fn plan_query_order(
     let n = q_graph.n;
     let mut visited = vec![false; n];
     let mut plan = Vec::with_capacity(n);
+    let mut frontier: Vec<(usize, usize, usize)> = Vec::new();
+    let mut seq = 0usize;
     while plan.len() < n {
         let start = (0..n)
             .filter(|&u| !visited[u])
@@ -561,31 +600,50 @@ pub(crate) fn plan_query_order(
             .unwrap_or(0);
         visited[start] = true;
         plan.push((start, None));
-        let mut cursor = plan.len() - 1;
-        while cursor < plan.len() {
-            let parent = plan[cursor].0;
-            cursor += 1;
-            let mut nexts: Vec<usize> = q_graph
-                .neighbors(parent)
-                .iter()
-                .map(|&(_, v)| v)
-                .filter(|&v| !visited[v])
-                .collect();
-            nexts.sort_unstable_by_key(|&v| {
-                (
-                    domain_sizes[v],
-                    std::cmp::Reverse(q_graph.neighbors(v).len()),
-                )
-            });
-            for v in nexts {
+        frontier.clear();
+        for &(_, v) in q_graph.neighbors(start) {
+            if !visited[v] {
+                visited[v] = true;
+                frontier.push((v, start, seq));
+                seq += 1;
+            }
+        }
+        while !frontier.is_empty() {
+            let best_idx = (0..frontier.len())
+                .min_by_key(|&i| {
+                    let (v, _, s) = frontier[i];
+                    (
+                        domain_sizes[v],
+                        std::cmp::Reverse(q_graph.neighbors(v).len()),
+                        std::cmp::Reverse(s),
+                    )
+                })
+                .unwrap_or(0);
+            let (u, parent, _) = frontier.swap_remove(best_idx);
+            plan.push((u, Some(parent)));
+            for &(_, v) in q_graph.neighbors(u) {
                 if !visited[v] {
                     visited[v] = true;
-                    plan.push((v, Some(parent)));
+                    frontier.push((v, u, seq));
+                    seq += 1;
                 }
             }
         }
     }
     plan
+}
+
+pub(crate) enum EmbedOutcome {
+    Matched(Vec<usize>),
+    NoMatch,
+    BudgetExceeded,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SearchStatus {
+    Found,
+    Exhausted,
+    BudgetExceeded,
 }
 
 /// Searches for an injective embedding of `q_graph` into `t_graph` honoring `spec`, pruning
@@ -597,60 +655,101 @@ pub(crate) fn find_embedding<S: EmbeddingSpec>(
     plan: &[(usize, Option<usize>)],
     spec: &S,
 ) -> Option<Vec<usize>> {
+    match run_embedding(q_graph, t_graph, Some(t_sym), plan, spec, None) {
+        EmbedOutcome::Matched(mapping) => Some(mapping),
+        EmbedOutcome::NoMatch | EmbedOutcome::BudgetExceeded => None,
+    }
+}
+
+/// Fast unpruned search with a failed-branch budget, avoiding `SymmetryGroup` construction on
+/// typical hits and simple non-hits.
+pub(crate) fn find_embedding_unpruned<S: EmbeddingSpec>(
+    q_graph: &CsrGraph,
+    t_graph: &CsrGraph,
+    plan: &[(usize, Option<usize>)],
+    spec: &S,
+    backtrack_budget: usize,
+) -> EmbedOutcome {
+    run_embedding(q_graph, t_graph, None, plan, spec, Some(backtrack_budget))
+}
+
+fn run_embedding<S: EmbeddingSpec>(
+    q_graph: &CsrGraph,
+    t_graph: &CsrGraph,
+    t_sym: Option<&SymmetryGroup>,
+    plan: &[(usize, Option<usize>)],
+    spec: &S,
+    budget: Option<usize>,
+) -> EmbedOutcome {
+    let has_sym = t_sym.is_some_and(|sym| !sym.generators.is_empty());
     let mut ctx = EmbedState {
         q_graph,
         t_graph,
         t_sym,
+        has_sym,
         plan,
         spec,
         mapping: vec![usize::MAX; q_graph.n],
         target_used: vec![false; t_graph.n],
-        orbits: vec![0; t_graph.n],
-        uf_parent: vec![0; t_graph.n],
+        orbits: if has_sym {
+            vec![0; t_graph.n]
+        } else {
+            Vec::new()
+        },
+        uf_parent: if has_sym {
+            vec![0; t_graph.n]
+        } else {
+            Vec::new()
+        },
+        cand_buf: Vec::with_capacity(q_graph.n),
+        tried_buf: Vec::new(),
+        budget,
     };
-    if ctx.search(0) {
-        Some(ctx.mapping)
-    } else {
-        None
+    match ctx.search(0) {
+        SearchStatus::Found => EmbedOutcome::Matched(ctx.mapping),
+        SearchStatus::Exhausted => EmbedOutcome::NoMatch,
+        SearchStatus::BudgetExceeded => EmbedOutcome::BudgetExceeded,
     }
 }
 
 struct EmbedState<'a, S: EmbeddingSpec> {
     q_graph: &'a CsrGraph,
     t_graph: &'a CsrGraph,
-    t_sym: &'a SymmetryGroup,
+    t_sym: Option<&'a SymmetryGroup>,
+    has_sym: bool,
     plan: &'a [(usize, Option<usize>)],
     spec: &'a S,
     mapping: Vec<usize>,
     target_used: Vec<bool>,
     orbits: Vec<usize>,
     uf_parent: Vec<usize>,
+    cand_buf: Vec<usize>,
+    tried_buf: Vec<usize>,
+    budget: Option<usize>,
 }
 
 impl<S: EmbeddingSpec> EmbedState<'_, S> {
-    fn candidates(&self, q: usize, parent: Option<usize>) -> Vec<usize> {
-        let mut out = Vec::new();
+    fn push_candidates(&mut self, q: usize, parent: Option<usize>) {
         if let Some(pq) = parent {
             let pt = self.mapping[pq];
             let Some(q_edge_from_parent) = self.q_graph.edge_between(pq, q) else {
-                return out;
+                return;
             };
             for &(t_code, t) in self.t_graph.neighbors(pt) {
                 if !self.target_used[t]
                     && self.spec.bond_compatible(q_edge_from_parent, t_code)
                     && self.edges_compatible(q, t)
                 {
-                    out.push(t);
+                    self.cand_buf.push(t);
                 }
             }
         } else {
             for t in 0..self.t_graph.n {
                 if !self.target_used[t] && self.edges_compatible(q, t) {
-                    out.push(t);
+                    self.cand_buf.push(t);
                 }
             }
         }
-        out
     }
 
     fn edges_compatible(&self, q: usize, t: usize) -> bool {
@@ -674,37 +773,69 @@ impl<S: EmbeddingSpec> EmbedState<'_, S> {
         true
     }
 
-    fn search(&mut self, depth: usize) -> bool {
+    fn search(&mut self, depth: usize) -> SearchStatus {
         if depth == self.plan.len() {
-            return self.spec.leaf_ok(&self.mapping);
+            return if self.spec.leaf_ok(&self.mapping) {
+                SearchStatus::Found
+            } else {
+                SearchStatus::Exhausted
+            };
         }
         let (q, parent) = self.plan[depth];
-        let cands = self.candidates(q, parent);
-        if cands.is_empty() {
-            return false;
+        let cand_base = self.cand_buf.len();
+        self.push_candidates(q, parent);
+        let cand_end = self.cand_buf.len();
+        if cand_base == cand_end {
+            return SearchStatus::Exhausted;
         }
-        let use_orbits = cands.len() > 1 && !self.t_sym.generators.is_empty();
+        let use_orbits = self.has_sym && (cand_end - cand_base) > 1;
         if use_orbits {
-            self.t_sym
-                .stabilizer_orbits(&self.target_used, &mut self.orbits, &mut self.uf_parent);
+            if let Some(sym) = self.t_sym {
+                sym.stabilizer_orbits(&self.target_used, &mut self.orbits, &mut self.uf_parent);
+            }
         }
-        let mut tried_orbits: Vec<usize> = Vec::new();
-        for t in cands {
+        let tried_base = self.tried_buf.len();
+        for idx in cand_base..cand_end {
+            let t = self.cand_buf[idx];
             let orb = if use_orbits { self.orbits[t] } else { t };
-            if use_orbits && tried_orbits.contains(&orb) {
+            if use_orbits && self.tried_buf[tried_base..].contains(&orb) {
                 continue;
             }
             self.mapping[q] = t;
             self.target_used[t] = true;
-            if self.spec.step_ok(q, &self.mapping) && self.search(depth + 1) {
-                return true;
+            if self.spec.step_ok(q, &self.mapping) {
+                match self.search(depth + 1) {
+                    SearchStatus::Found => {
+                        self.cand_buf.truncate(cand_base);
+                        self.tried_buf.truncate(tried_base);
+                        return SearchStatus::Found;
+                    }
+                    SearchStatus::BudgetExceeded => {
+                        self.target_used[t] = false;
+                        self.mapping[q] = usize::MAX;
+                        self.cand_buf.truncate(cand_base);
+                        self.tried_buf.truncate(tried_base);
+                        return SearchStatus::BudgetExceeded;
+                    }
+                    SearchStatus::Exhausted => {}
+                }
             }
             self.target_used[t] = false;
             self.mapping[q] = usize::MAX;
+            if let Some(rem) = &mut self.budget {
+                if *rem == 0 {
+                    self.cand_buf.truncate(cand_base);
+                    self.tried_buf.truncate(tried_base);
+                    return SearchStatus::BudgetExceeded;
+                }
+                *rem -= 1;
+            }
             if use_orbits {
-                tried_orbits.push(orb);
+                self.tried_buf.push(orb);
             }
         }
-        false
+        self.cand_buf.truncate(cand_base);
+        self.tried_buf.truncate(tried_base);
+        SearchStatus::Exhausted
     }
 }

@@ -1,18 +1,17 @@
 //! Whether two molecules are the same, however they were written (#58).
 use crate::descriptors::fingerprints::ecfp::fnv1a;
+use crate::model::atom::Atom;
 use crate::model::bond::{Bond, BondOrder};
 use crate::model::matcher::{
-    find_embedding, pack_bond, plan_query_order, refine_hash_signature, CsrGraph, EmbeddingSpec,
-    SymmetryGroup,
+    find_embedding, find_embedding_unpruned, mix64, mix_word, pack_bond, plan_query_order,
+    refine_hash_signature, CsrGraph, EmbedOutcome, EmbeddingSpec, SymmetryGroup,
 };
 use crate::model::molecule::Molecule;
 use crate::model::stereo::{Configuration, CoordinationGeometry, Ligand};
-use petgraph::graph::{Graph, NodeIndex as GraphIndex};
-use petgraph::stable_graph::{EdgeReference, NodeIndex};
+use petgraph::stable_graph::{EdgeReference, NodeIndex, StableGraph};
 use petgraph::visit::{EdgeRef, IntoEdgeReferences, NodeIndexable};
 use petgraph::Undirected;
-use std::cell::OnceCell;
-use std::collections::HashMap;
+use std::sync::{Arc, OnceLock};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ExactMatchError {
@@ -22,15 +21,26 @@ pub enum ExactMatchError {
     TooSymmetric,
 }
 
-#[derive(Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
-struct AtomKey {
+/// Core atom attributes packed without per-atom heap allocations; field order matches the
+/// canonical ordering used when folding and hashing twin end-atoms.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+struct AtomBase {
     atomic_number: u8,
     isotope: u16,
     charge: i8,
-    hydrogens: usize,
+    hydrogens: u32,
     aromatic: bool,
-    /// Folded twin end atoms, with their bonds, sorted.
-    twins: Vec<(AtomKey, BondOrder)>,
+}
+
+impl AtomBase {
+    #[inline]
+    fn packed(self) -> u64 {
+        u64::from(self.atomic_number)
+            | (u64::from(self.aromatic) << 8)
+            | (u64::from(self.charge.cast_unsigned()) << 9)
+            | (u64::from(self.isotope) << 17)
+            | (u64::from(self.hydrogens) << 33)
+    }
 }
 
 /// What became of a source atom.
@@ -329,7 +339,7 @@ impl Stereo {
         out.dedup();
     }
 
-    fn encode_for_leaf(&self, rank_of: &[usize], csr: &CsrGraph, keys: &[AtomKey]) -> [u64; 8] {
+    fn encode_for_leaf(&self, rank_of: &[usize], csr: &CsrGraph, keys: &[AtomBase]) -> [u64; 8] {
         let map_site = |site: Site| match site {
             Site::Atom(a) => RankedSite::Atom(rank_of[a]),
             Site::Hydrogen(a) => RankedSite::Hydrogen(rank_of[a]),
@@ -419,145 +429,490 @@ impl Stereo {
 /// count, so `[H]C([H])([H])[H]` is the same as `C`. Alike end atoms on one neighbour,
 /// such as the methyls of `N(C)C` or the oxygens of `S(=O)(=O)`, are folded into its key:
 /// swapping them changes nothing, but unpruned VF2 would try both orders of every such pair.
-struct Folded {
+pub(crate) struct Folded {
     csr: CsrGraph,
-    keys: Vec<AtomKey>,
+    keys: Vec<AtomBase>,
+    twin_spans: Vec<(u32, u32)>,
+    twin_pool: Vec<(AtomBase, u8)>,
     refined_colors: Vec<usize>,
     refined_hashes: Vec<u64>,
     color_hist: Vec<(u64, usize)>,
-    /// (donor, acceptor) of each dative bond.
-    datives: Vec<(usize, usize)>,
+    dative_count: usize,
     stereo: Vec<Stereo>,
-    /// Index into `stereo` by anchor.
-    anchors: HashMap<[usize; 2], usize>,
-    fake: OnceCell<Result<Vec<bool>, ExactMatchError>>,
-    real_sym: OnceCell<SymmetryGroup>,
+    /// Sorted by anchor `[usize; 2]` for fast lookup without `HashMap` allocation.
+    anchors: Vec<([usize; 2], usize)>,
+    fake: OnceLock<Vec<bool>>,
+    real_sym: OnceLock<SymmetryGroup>,
 }
 
-type FoldedGraph = Graph<AtomKey, BondOrder, Undirected>;
+struct FoldedRaw {
+    n: usize,
+    offsets: Vec<usize>,
+    edges: Vec<(u8, usize)>,
+    keys: Vec<AtomBase>,
+    twin_spans: Vec<(u32, u32)>,
+    twin_pool: Vec<(AtomBase, u8)>,
+    dative_bonds: Vec<usize>,
+    fates: Vec<Fate>,
+}
+
+impl FoldedRaw {
+    #[inline]
+    fn twins_of(&self, u: usize) -> &[(AtomBase, u8)] {
+        if self.twin_pool.is_empty() {
+            return &[];
+        }
+        let (start, len) = self.twin_spans[u];
+        &self.twin_pool[start as usize..(start + len) as usize]
+    }
+}
+
+#[inline]
+fn is_fake_at(fake: &[bool], idx: usize) -> bool {
+    fake.get(idx).copied().unwrap_or(false)
+}
+
+#[inline]
+fn edge_other(edge: EdgeReference<'_, Bond>, node: NodeIndex) -> NodeIndex {
+    if edge.source() == node {
+        edge.target()
+    } else {
+        edge.source()
+    }
+}
+
+fn is_plain_hydrogen(source: &StableGraph<Atom, Bond, Undirected>, node: NodeIndex) -> bool {
+    let atom = &source[node];
+    let mut edges = source.edges(node);
+    atom.element.atomic_number == 1
+        && atom.isotope == 0
+        && atom.charge == 0
+        && atom.hs + atom.implicit_hs == 0
+        && matches!((edges.next(), edges.next()), (Some(edge), None)
+            if edge.weight().order == BondOrder::Single
+                && source[edge_other(edge, node)].element.atomic_number != 1)
+}
+
+struct TwinCollapse {
+    kept_deg: Vec<usize>,
+    is_twin: Vec<bool>,
+    raw_twins: Vec<(usize, AtomBase, u8)>,
+}
+
+fn collapse_twins(
+    source: &StableGraph<Atom, Bond, Undirected>,
+    kept_idx: &[usize],
+    kept_nodes: &[NodeIndex],
+    kept_bases: &[AtomBase],
+) -> TwinCollapse {
+    let n_kept = kept_nodes.len();
+    let mut kept_deg = vec![0usize; n_kept];
+    let mut end_cands: Vec<(usize, u8, AtomBase, usize)> = Vec::new();
+    for (u, &node) in kept_nodes.iter().enumerate() {
+        let mut deg = 0usize;
+        let mut last_parent = 0usize;
+        let mut last_order = BondOrder::Single;
+        for edge in source.edges(node) {
+            let other = kept_idx[edge_other(edge, node).index()];
+            if other != usize::MAX {
+                deg += 1;
+                last_parent = other;
+                last_order = edge.weight().order;
+            }
+        }
+        kept_deg[u] = deg;
+        if deg == 1 && last_order != BondOrder::Dative {
+            end_cands.push((last_parent, pack_bond(last_order, false), kept_bases[u], u));
+        }
+    }
+
+    let mut is_twin = vec![false; n_kept];
+    let mut raw_twins: Vec<(usize, AtomBase, u8)> = Vec::new();
+    if end_cands.len() > 1 {
+        end_cands.sort_unstable();
+        let mut i = 0;
+        while i < end_cands.len() {
+            let (parent, bond_code, base, _) = end_cands[i];
+            let mut j = i + 1;
+            while j < end_cands.len()
+                && end_cands[j].0 == parent
+                && end_cands[j].1 == bond_code
+                && end_cands[j].2 == base
+            {
+                j += 1;
+            }
+            if j - i > 1 {
+                for &(_, _, _, u) in &end_cands[i..j] {
+                    is_twin[u] = true;
+                    kept_deg[u] = 0;
+                    kept_deg[parent] -= 1;
+                    raw_twins.push((parent, base, bond_code));
+                }
+            }
+            i = j;
+        }
+    }
+    TwinCollapse {
+        kept_deg,
+        is_twin,
+        raw_twins,
+    }
+}
+
+type TwinPool = (Vec<(u32, u32)>, Vec<(AtomBase, u8)>);
+
+fn build_twin_pool(
+    n: usize,
+    folded_of_kept: &[usize],
+    mut raw_twins: Vec<(usize, AtomBase, u8)>,
+) -> TwinPool {
+    if raw_twins.is_empty() {
+        return (Vec::new(), Vec::new());
+    }
+    for entry in &mut raw_twins {
+        entry.0 = folded_of_kept[entry.0];
+    }
+    raw_twins.sort_unstable();
+    let mut spans = vec![(0u32, 0u32); n];
+    let mut pool = Vec::with_capacity(raw_twins.len());
+    let mut i = 0;
+    while i < raw_twins.len() {
+        let owner = raw_twins[i].0;
+        let start = pool.len();
+        while i < raw_twins.len() && raw_twins[i].0 == owner {
+            pool.push((raw_twins[i].1, raw_twins[i].2));
+            i += 1;
+        }
+        let len = pool.len() - start;
+        spans[owner] = (
+            u32::try_from(start).unwrap_or(u32::MAX),
+            u32::try_from(len).unwrap_or(u32::MAX),
+        );
+    }
+    (spans, pool)
+}
+
+fn fold_raw(molecule: &Molecule) -> FoldedRaw {
+    let source = molecule.graph();
+    let nb = source.node_bound();
+    let mut kept_idx = vec![usize::MAX; nb];
+    let mut kept_nodes = Vec::with_capacity(source.node_count());
+    let mut kept_bases = Vec::with_capacity(source.node_count());
+
+    for node in source.node_indices() {
+        if is_plain_hydrogen(source, node) {
+            continue;
+        }
+        let atom = &source[node];
+        let folded_h = source
+            .neighbors(node)
+            .filter(|&nbr| is_plain_hydrogen(source, nbr))
+            .count();
+        let hydrogens = u32::from(atom.hs)
+            + u32::from(atom.implicit_hs)
+            + u32::try_from(folded_h).unwrap_or(u32::MAX);
+        kept_idx[node.index()] = kept_nodes.len();
+        kept_nodes.push(node);
+        kept_bases.push(AtomBase {
+            atomic_number: atom.element.atomic_number,
+            isotope: atom.isotope,
+            charge: atom.charge,
+            hydrogens,
+            aromatic: atom.aromatic,
+        });
+    }
+
+    let n_kept = kept_nodes.len();
+    let collapse = collapse_twins(source, &kept_idx, &kept_nodes, &kept_bases);
+
+    let mut fates = vec![Fate::Hydrogen; nb];
+    let mut folded_of_kept = vec![usize::MAX; n_kept];
+    let mut keys = Vec::with_capacity(n_kept);
+    let mut offsets = Vec::with_capacity(n_kept + 1);
+    offsets.push(0);
+    for u in 0..n_kept {
+        if collapse.is_twin[u] {
+            fates[kept_nodes[u].index()] = Fate::Twin;
+            continue;
+        }
+        let f = keys.len();
+        folded_of_kept[u] = f;
+        fates[kept_nodes[u].index()] = Fate::Kept(f);
+        keys.push(kept_bases[u]);
+        offsets.push(offsets[f] + collapse.kept_deg[u]);
+    }
+    let n = keys.len();
+    let (twin_spans, twin_pool) = build_twin_pool(n, &folded_of_kept, collapse.raw_twins);
+
+    let mut cursor = offsets[..n].to_vec();
+    let mut edges = vec![(0u8, 0usize); offsets[n]];
+    let mut dative_bonds = Vec::new();
+    for edge in source.edge_references() {
+        let (Fate::Kept(a), Fate::Kept(b)) =
+            (fates[edge.source().index()], fates[edge.target().index()])
+        else {
+            continue;
+        };
+        let weight = edge.weight();
+        if weight.donor.is_some() {
+            dative_bonds.push(a);
+        }
+        let a_donor = weight.donor == Some(edge.source());
+        let b_donor = weight.donor == Some(edge.target());
+        edges[cursor[a]] = (pack_bond(weight.order, a_donor), b);
+        cursor[a] += 1;
+        edges[cursor[b]] = (pack_bond(weight.order, b_donor), a);
+        cursor[b] += 1;
+    }
+
+    FoldedRaw {
+        n,
+        offsets,
+        edges,
+        keys,
+        twin_spans,
+        twin_pool,
+        dative_bonds,
+        fates,
+    }
+}
 
 impl Folded {
-    fn new(graph: &FoldedGraph, datives: Vec<(usize, usize)>, stereo: Vec<Stereo>) -> Folded {
-        let n = graph.node_count();
-        let keys: Vec<AtomKey> = (0..n).map(|i| graph[GraphIndex::new(i)].clone()).collect();
-        let base_hashes: Vec<u64> = keys.iter().map(atom_code).collect();
-        let mut adj: Vec<Vec<(u8, usize)>> = vec![Vec::new(); n];
-        for edge in graph.edge_references() {
-            let (u, v) = (edge.source().index(), edge.target().index());
-            let order = *edge.weight();
-            adj[u].push((pack_bond(order, datives.contains(&(u, v))), v));
-            adj[v].push((pack_bond(order, datives.contains(&(v, u))), u));
+    fn from_raw(raw: FoldedRaw, dative_count: usize, stereo: Vec<Stereo>) -> Folded {
+        let n = raw.n;
+        let mut base_hashes = Vec::with_capacity(n);
+        if raw.twin_pool.is_empty() {
+            for &base in &raw.keys {
+                base_hashes.push(fast_atom_code(base, &[]));
+            }
+        } else {
+            for (u, &base) in raw.keys.iter().enumerate() {
+                base_hashes.push(fast_atom_code(base, raw.twins_of(u)));
+            }
         }
-        let csr = CsrGraph::from_adj(n, &adj, base_hashes);
-        let (refined_colors, refined_hashes) = refine_hash_signature(&csr);
-        let mut counts = vec![0usize; refined_hashes.len()];
-        for &c in &refined_colors {
-            counts[c] += 1;
-        }
-        let color_hist: Vec<(u64, usize)> = refined_hashes.iter().copied().zip(counts).collect();
-        let anchors = stereo
+        let csr = CsrGraph {
+            n,
+            offsets: raw.offsets,
+            edges: raw.edges,
+            base_hashes,
+        };
+        let (refined_colors, refined_hashes, color_hist) = refine_hash_signature(&csr);
+        let mut anchors: Vec<([usize; 2], usize)> = stereo
             .iter()
             .enumerate()
             .map(|(i, element)| (element.anchor(|atom| atom), i))
             .collect();
+        if anchors.len() > 16 {
+            anchors.sort_unstable_by_key(|&(anchor, _)| anchor);
+        }
         Folded {
             csr,
-            keys,
+            keys: raw.keys,
+            twin_spans: raw.twin_spans,
+            twin_pool: raw.twin_pool,
             refined_colors,
             refined_hashes,
             color_hist,
-            datives,
+            dative_count,
             stereo,
             anchors,
-            fake: OnceCell::new(),
-            real_sym: OnceCell::new(),
+            fake: OnceLock::new(),
+            real_sym: OnceLock::new(),
+        }
+    }
+
+    #[inline]
+    fn twins_of(&self, u: usize) -> &[(AtomBase, u8)] {
+        if self.twin_pool.is_empty() {
+            return &[];
+        }
+        let (start, len) = self.twin_spans[u];
+        &self.twin_pool[start as usize..(start + len) as usize]
+    }
+
+    #[inline]
+    fn atom_equal(&self, q: usize, target: &Folded, t: usize) -> bool {
+        if self.keys[q] != target.keys[t] {
+            return false;
+        }
+        if self.twin_pool.is_empty() && target.twin_pool.is_empty() {
+            return true;
+        }
+        self.twins_of(q) == target.twins_of(t)
+    }
+
+    #[inline]
+    fn anchor_get(&self, anchor: [usize; 2]) -> Option<usize> {
+        if self.anchors.len() <= 16 {
+            self.anchors
+                .iter()
+                .find_map(|&(key, idx)| (key == anchor).then_some(idx))
+        } else {
+            self.anchors
+                .binary_search_by_key(&anchor, |&(key, _)| key)
+                .ok()
+                .map(|pos| self.anchors[pos].1)
         }
     }
 
     /// One `Folded` per connected component, so k alike salt or water parts cost k
     /// matches instead of k! mappings. No stereo element spans two components.
-    fn components(molecule: &Molecule) -> Result<Vec<Folded>, ExactMatchError> {
-        let (graph, fates, datives) = Folded::fold(molecule);
-        let stereo = Folded::read_stereo(molecule, &graph, &fates)?;
-        let mut component = vec![usize::MAX; graph.node_count()];
-        // each atom's index within its component
-        let mut local = vec![0; graph.node_count()];
-        let mut parts: Vec<FoldedGraph> = Vec::new();
-        for start in graph.node_indices() {
-            if component[start.index()] != usize::MAX {
+    pub(crate) fn components(molecule: &Molecule) -> Result<Vec<Folded>, ExactMatchError> {
+        let raw = fold_raw(molecule);
+        if raw.n == 0 {
+            return Ok(Vec::new());
+        }
+        let stereo = Folded::read_stereo(molecule, &raw)?;
+        let n = raw.n;
+
+        // Connected component scan directly on the flat CSR; fast-paths single-component
+        // molecules without allocating per-component graphs or remapping vertices.
+        let mut component = vec![usize::MAX; n];
+        let mut queue = Vec::with_capacity(n);
+        component[0] = 0;
+        queue.push(0usize);
+        let mut head = 0usize;
+        while head < queue.len() {
+            let u = queue[head];
+            head += 1;
+            for &(_, v) in &raw.edges[raw.offsets[u]..raw.offsets[u + 1]] {
+                if component[v] == usize::MAX {
+                    component[v] = 0;
+                    queue.push(v);
+                }
+            }
+        }
+        if queue.len() == n {
+            let dative_count = raw.dative_bonds.len();
+            return Ok(vec![Folded::from_raw(raw, dative_count, stereo)]);
+        }
+
+        Ok(Self::split_components(
+            &raw,
+            &mut component,
+            &mut queue,
+            stereo,
+        ))
+    }
+
+    fn split_components(
+        raw: &FoldedRaw,
+        component: &mut [usize],
+        queue: &mut Vec<usize>,
+        stereo: Vec<Stereo>,
+    ) -> Vec<Folded> {
+        let n = raw.n;
+        let mut comp_verts: Vec<Vec<usize>> = vec![Vec::new()];
+        let mut local = vec![0usize; n];
+        for start in 0..n {
+            if component[start] != usize::MAX {
                 continue;
             }
-            let mut part = Graph::new_undirected();
-            let mut stack = vec![start];
-            component[start.index()] = parts.len();
-            while let Some(node) = stack.pop() {
-                local[node.index()] = part.add_node(graph[node].clone()).index();
-                for next in graph.neighbors(node) {
-                    if component[next.index()] == usize::MAX {
-                        component[next.index()] = parts.len();
-                        stack.push(next);
+            let comp_id = comp_verts.len();
+            comp_verts.push(Vec::new());
+            queue.clear();
+            component[start] = comp_id;
+            queue.push(start);
+            let mut qh = 0usize;
+            while qh < queue.len() {
+                let u = queue[qh];
+                qh += 1;
+                for &(_, v) in &raw.edges[raw.offsets[u]..raw.offsets[u + 1]] {
+                    if component[v] == usize::MAX {
+                        component[v] = comp_id;
+                        queue.push(v);
                     }
                 }
             }
-            parts.push(part);
         }
-        for edge in graph.edge_references() {
-            let (a, b) = (edge.source().index(), edge.target().index());
-            parts[component[a]].add_edge(
-                GraphIndex::new(local[a]),
-                GraphIndex::new(local[b]),
-                *edge.weight(),
-            );
+        for (u, &c) in component.iter().enumerate() {
+            local[u] = comp_verts[c].len();
+            comp_verts[c].push(u);
         }
-        let mut part_datives = vec![Vec::new(); parts.len()];
-        for (donor, acceptor) in datives {
-            part_datives[component[donor]].push((local[donor], local[acceptor]));
+
+        let num_comps = comp_verts.len();
+        let mut comp_datives = vec![0usize; num_comps];
+        for &atom in &raw.dative_bonds {
+            comp_datives[component[atom]] += 1;
         }
-        let mut part_stereo: Vec<Vec<Stereo>> = parts.iter().map(|_| Vec::new()).collect();
+        let mut comp_stereo: Vec<Vec<Stereo>> = (0..num_comps).map(|_| Vec::new()).collect();
         for element in stereo {
             let [atom, _] = element.anchor(|atom| atom);
-            part_stereo[component[atom]].push(element.mapped(&local));
+            comp_stereo[component[atom]].push(element.mapped(&local));
         }
-        Ok(parts
-            .into_iter()
-            .zip(part_datives)
-            .zip(part_stereo)
-            .map(|((graph, datives), stereo)| Folded::new(&graph, datives, stereo))
-            .collect())
+
+        let mut out = Vec::with_capacity(num_comps);
+        for (c, verts) in comp_verts.iter().enumerate() {
+            let cn = verts.len();
+            let mut offsets = Vec::with_capacity(cn + 1);
+            let mut keys = Vec::with_capacity(cn);
+            let mut twin_spans = if raw.twin_pool.is_empty() {
+                Vec::new()
+            } else {
+                Vec::with_capacity(cn)
+            };
+            let mut twin_pool = Vec::new();
+            offsets.push(0);
+            let mut total_edges = 0usize;
+            for &u in verts {
+                let deg = raw.offsets[u + 1] - raw.offsets[u];
+                total_edges += deg;
+                offsets.push(total_edges);
+                keys.push(raw.keys[u]);
+                if !raw.twin_pool.is_empty() {
+                    let t = raw.twins_of(u);
+                    let s = u32::try_from(twin_pool.len()).unwrap_or(u32::MAX);
+                    let l = u32::try_from(t.len()).unwrap_or(u32::MAX);
+                    twin_spans.push((s, l));
+                    twin_pool.extend_from_slice(t);
+                }
+            }
+            let mut edges = Vec::with_capacity(total_edges);
+            for &u in verts {
+                for &(code, v) in &raw.edges[raw.offsets[u]..raw.offsets[u + 1]] {
+                    edges.push((code, local[v]));
+                }
+            }
+            let sub_raw = FoldedRaw {
+                n: cn,
+                offsets,
+                edges,
+                keys,
+                twin_spans,
+                twin_pool,
+                dative_bonds: Vec::new(),
+                fates: Vec::new(),
+            };
+            out.push(Folded::from_raw(
+                sub_raw,
+                comp_datives[c],
+                std::mem::take(&mut comp_stereo[c]),
+            ));
+        }
+        out
     }
 
     /// Whether `target` is the same component using refined colors, incremental stereo checks,
-    /// and Indigo-style target stabilizer orbit pruning.
-    fn matches(&self, target: &Folded) -> Result<bool, ExactMatchError> {
+    /// and lazy Indigo-style target stabilizer orbit pruning.
+    fn matches(&self, target: &Folded) -> bool {
         if self.csr.n != target.csr.n
             || self.csr.edges.len() != target.csr.edges.len()
-            || self.datives.len() != target.datives.len()
+            || self.dative_count != target.dative_count
             || self.color_hist != target.color_hist
         {
-            return Ok(false);
-        }
-        let q_fake = self.fake()?;
-        let t_fake = target.fake()?;
-        let q_real: Vec<usize> = q_fake
-            .iter()
-            .enumerate()
-            .filter_map(|(i, &f)| (!f).then_some(i))
-            .collect();
-        let t_real: Vec<usize> = t_fake
-            .iter()
-            .enumerate()
-            .filter_map(|(i, &f)| (!f).then_some(i))
-            .collect();
-        if q_real.len() != t_real.len() {
-            return Ok(false);
+            return false;
         }
         let n = self.csr.n;
         if n == 0 {
-            return Ok(true);
+            return true;
         }
 
         // Fast O(n + m) path when refined colors already force a unique 1-to-1 bijection.
+        // Distinct vertex colors forbid any graph automorphism, so no stereo element can be fake.
         if self.refined_hashes.len() == n {
+            if self.stereo.len() != target.stereo.len() {
+                return false;
+            }
             let mut target_by_color = vec![0usize; n];
             for (t, &c) in target.refined_colors.iter().enumerate() {
                 target_by_color[c] = t;
@@ -569,130 +924,52 @@ impl Folded {
                 .collect();
             let atoms_and_edges_ok = (0..n).all(|q| {
                 let t = mapping[q];
-                self.keys[q] == target.keys[t]
+                self.atom_equal(q, target, t)
                     && self.csr.neighbors(q).iter().all(|&(q_code, qn)| {
                         target.csr.edge_between(t, mapping[qn]) == Some(q_code)
                     })
             });
             if !atoms_and_edges_ok {
-                return Ok(false);
+                return false;
             }
-            return Ok(q_real.iter().all(|&i| {
-                let el = &self.stereo[i];
+            return self.stereo.iter().all(|el| {
                 target
-                    .anchors
-                    .get(&el.anchor(|a| mapping[a]))
-                    .is_some_and(|&j| !t_fake[j] && el.agrees(&mapping, &target.stereo[j]))
-            }));
-        }
-
-        let spec = ExactMatchSpec::new(self, target, &q_real, t_fake);
-        let t_sym = target.real_sym.get_or_init(|| target.compute_sym(&t_real));
-        let mut counts = vec![0usize; target.refined_hashes.len()];
-        for &c in &target.refined_colors {
-            counts[c] += 1;
-        }
-        let domain_sizes: Vec<usize> = self.refined_colors.iter().map(|&c| counts[c]).collect();
-        let plan = plan_query_order(&self.csr, &domain_sizes);
-        Ok(find_embedding(&self.csr, &target.csr, t_sym, &plan, &spec).is_some())
-    }
-
-    /// The folded graph, what became of each source atom, and the dative bonds.
-    fn fold(molecule: &Molecule) -> (FoldedGraph, Vec<Fate>, Vec<(usize, usize)>) {
-        let source = molecule.graph();
-        let other = |edge: EdgeReference<'_, Bond>, node: NodeIndex| {
-            if edge.source() == node {
-                edge.target()
-            } else {
-                edge.source()
-            }
-        };
-        // a plain hydrogen on one heavy atom; [2H], [H+] and H2 stay atoms
-        let hydrogen = |node: NodeIndex| {
-            let atom = &source[node];
-            let mut edges = source.edges(node);
-            atom.element.atomic_number == 1
-                && atom.isotope == 0
-                && atom.charge == 0
-                && atom.hs + atom.implicit_hs == 0
-                && matches!((edges.next(), edges.next()), (Some(edge), None)
-                    if edge.weight().order == BondOrder::Single
-                        && source[other(edge, node)].element.atomic_number != 1)
-        };
-        let mut keys: Vec<Option<AtomKey>> = vec![None; source.node_bound()];
-        for node in source.node_indices().filter(|&node| !hydrogen(node)) {
-            let atom = &source[node];
-            let folded = source
-                .neighbors(node)
-                .filter(|&other| hydrogen(other))
-                .count();
-            keys[node.index()] = Some(AtomKey {
-                atomic_number: atom.element.atomic_number,
-                isotope: atom.isotope,
-                charge: atom.charge,
-                hydrogens: usize::from(atom.hs) + usize::from(atom.implicit_hs) + folded,
-                aromatic: atom.aromatic,
-                twins: Vec::new(),
+                    .anchor_get(el.anchor(|a| mapping[a]))
+                    .is_some_and(|j| el.agrees(&mapping, &target.stereo[j]))
             });
         }
 
-        // end atoms: one covalent bond to a kept atom, and no other
-        let mut ends: HashMap<(NodeIndex, BondOrder, &AtomKey), Vec<NodeIndex>> = HashMap::new();
-        for node in source.node_indices() {
-            let Some(key) = &keys[node.index()] else {
-                continue;
-            };
-            let mut bonds = source
-                .edges(node)
-                .filter(|&edge| keys[other(edge, node).index()].is_some());
-            if let (Some(edge), None) = (bonds.next(), bonds.next()) {
-                if edge.weight().order != BondOrder::Dative {
-                    let group = (other(edge, node), edge.weight().order, key);
-                    ends.entry(group).or_default().push(node);
-                }
-            }
-        }
-        let twins: Vec<(NodeIndex, BondOrder, Vec<NodeIndex>)> = ends
-            .into_iter()
-            .filter(|(_, group)| group.len() > 1)
-            .map(|((parent, order, _), group)| (parent, order, group))
-            .collect();
-        let mut fates = vec![Fate::Hydrogen; source.node_bound()];
-        for (parent, order, group) in twins {
-            for twin in group {
-                fates[twin.index()] = Fate::Twin;
-                if let (Some(key), Some(parent)) =
-                    (keys[twin.index()].take(), &mut keys[parent.index()])
-                {
-                    parent.twins.push((key, order));
-                }
-            }
+        let q_fake = self.fake();
+        let t_fake = target.fake();
+        let q_real_count = self.stereo.len() - q_fake.iter().filter(|&&f| f).count();
+        let t_real_count = target.stereo.len() - t_fake.iter().filter(|&&f| f).count();
+        if q_real_count != t_real_count {
+            return false;
         }
 
-        let mut graph = Graph::new_undirected();
-        for node in source.node_indices() {
-            if let Some(mut key) = keys[node.index()].take() {
-                key.twins.sort();
-                fates[node.index()] = Fate::Kept(graph.add_node(key).index());
-            }
+        let spec = ExactMatchSpec::new(self, target, q_fake, t_fake);
+        let domain_sizes: Vec<usize> = self
+            .refined_colors
+            .iter()
+            .map(|&c| target.color_hist[c].1)
+            .collect();
+        let plan = plan_query_order(&self.csr, &domain_sizes);
+
+        // Try fast unpruned search first; only compute full SymmetryGroup when symmetry-induced
+        // backtracking exceeds a tiny budget.
+        match find_embedding_unpruned(&self.csr, &target.csr, &plan, &spec, 64) {
+            EmbedOutcome::Matched(_) => return true,
+            EmbedOutcome::NoMatch => return false,
+            EmbedOutcome::BudgetExceeded => {}
         }
-        let mut datives = Vec::new();
-        for edge in source.edge_references() {
-            let (Fate::Kept(a), Fate::Kept(b)) =
-                (fates[edge.source().index()], fates[edge.target().index()])
-            else {
-                continue;
-            };
-            graph.add_edge(GraphIndex::new(a), GraphIndex::new(b), edge.weight().order);
-            if let Some(donor) = edge.weight().donor {
-                datives.push(if donor == edge.source() {
-                    (a, b)
-                } else {
-                    (b, a)
-                });
-            }
-        }
-        (graph, fates, datives)
+
+        let t_sym = target.real_sym.get_or_init(|| {
+            let t_real: Vec<usize> = (0..target.stereo.len())
+                .filter(|&i| !is_fake_at(t_fake, i))
+                .collect();
+            target.compute_sym(&t_real)
+        });
+        find_embedding(&self.csr, &target.csr, t_sym, &plan, &spec).is_some()
     }
 
     fn read_coordination(
@@ -734,11 +1011,8 @@ impl Folded {
 
     /// The stereo elements in folded-graph atoms, without those that two alike ligands
     /// rule out.
-    fn read_stereo(
-        molecule: &Molecule,
-        graph: &FoldedGraph,
-        fates: &[Fate],
-    ) -> Result<Vec<Stereo>, ExactMatchError> {
+    fn read_stereo(molecule: &Molecule, raw: &FoldedRaw) -> Result<Vec<Stereo>, ExactMatchError> {
+        let fates = &raw.fates;
         // a hydrogen or twin is an end atom, so it is never a centre, an allene terminal or a
         // double-bond end
         let atom = |node: NodeIndex| match fates[node.index()] {
@@ -837,10 +1111,9 @@ impl Folded {
                 configuration,
                 ..
             } => !configuration.all_coordination_trivial(&ligands[..*len]),
-            Stereo::DoubleBond { ends, .. } => ends.iter().all(|&end| {
-                let key = &graph[GraphIndex::new(end)];
-                key.hydrogens < 2 && key.twins.is_empty()
-            }),
+            Stereo::DoubleBond { ends, .. } => ends
+                .iter()
+                .all(|&end| raw.keys[end].hydrogens < 2 && raw.twins_of(end).is_empty()),
         });
         Ok(stereo)
     }
@@ -927,7 +1200,11 @@ impl Folded {
                             configuration,
                             map_site,
                         );
-                        buf[center].push(fnv1a(code));
+                        let mut h = code[0];
+                        for &word in &code[1..] {
+                            h = mix_word(h, word);
+                        }
+                        buf[center].push(mix64(h));
                     }
                 }
                 Stereo::DoubleBond {
@@ -996,35 +1273,23 @@ impl Folded {
             }
         }
         if let Some(p) = parity {
-            buf[ends[0]].push(fnv1a([20, colors[ends[1]] as u64, u64::from(p)]));
-            buf[ends[1]].push(fnv1a([20, colors[ends[0]] as u64, u64::from(p)]));
+            let p_word = u64::from(p);
+            buf[ends[0]].push(mix64(mix_word(
+                mix_word(20, colors[ends[1]] as u64),
+                p_word,
+            )));
+            buf[ends[1]].push(mix64(mix_word(
+                mix_word(20, colors[ends[0]] as u64),
+                p_word,
+            )));
         }
     }
 
-    fn fake(&self) -> Result<&[bool], ExactMatchError> {
-        self.fake
-            .get_or_init(|| Ok(self.find_fake()))
-            .as_deref()
-            .map_err(|error| *error)
+    fn fake(&self) -> &[bool] {
+        self.fake.get_or_init(|| self.find_fake())
     }
 
-    /// Marks each stereo element that a symmetry of the molecule inverts while keeping all
-    /// other active stereo fixed, iterating until convergence for cascading fake elements.
-    fn find_fake(&self) -> Vec<bool> {
-        let m = self.stereo.len();
-        let mut fake = vec![false; m];
-        if m == 0 {
-            return fake;
-        }
-        let n = self.csr.n;
-        let mut stereo_refs = vec![0usize; n];
-        let mut verts = Vec::new();
-        for element in &self.stereo {
-            element.collect_vertices(&mut verts);
-            for &v in &verts {
-                stereo_refs[v] += 1;
-            }
-        }
+    fn element_has_tied_colors(&self, index: usize) -> bool {
         let map_const_site = |site: Site| match site {
             Site::Atom(a) => RankedSite::Atom(self.refined_colors[a]),
             Site::Hydrogen(h) => RankedSite::Hydrogen(self.refined_colors[h]),
@@ -1032,71 +1297,89 @@ impl Folded {
             Site::Twin => RankedSite::Twin,
             Site::Vacancy => RankedSite::Vacancy,
         };
+        match self.stereo[index] {
+            Stereo::Parity { ligands, .. } => {
+                let s = ligands.map(map_const_site);
+                (0..4).any(|a| (a + 1..4).any(|b| s[a] == s[b]))
+            }
+            Stereo::Coordination { ligands, len, .. } => {
+                let mut s = [RankedSite::Vacancy; 6];
+                for (slot, &l) in s[..len].iter_mut().zip(&ligands[..len]) {
+                    *slot = map_const_site(l);
+                }
+                !distinct_sites(&s[..len])
+            }
+            Stereo::DoubleBond { ends, .. } => ends.iter().any(|&end| {
+                let partner = if end == ends[0] { ends[1] } else { ends[0] };
+                let mut first: Option<usize> = None;
+                for &(_, v) in self.csr.neighbors(end) {
+                    if v != partner {
+                        let c = self.refined_colors[v];
+                        if let Some(prev) = first {
+                            if prev == c {
+                                return true;
+                            }
+                        } else {
+                            first = Some(c);
+                        }
+                    }
+                }
+                false
+            }),
+        }
+    }
+
+    /// Marks each stereo element that a symmetry of the molecule inverts while keeping all
+    /// other active stereo fixed, iterating until convergence for cascading fake elements.
+    /// Returns an empty `Vec` when no element is fake to avoid allocating on typical molecules.
+    fn find_fake(&self) -> Vec<bool> {
+        let m = self.stereo.len();
+        if m == 0 || !(0..m).any(|i| self.element_has_tied_colors(i)) {
+            return Vec::new();
+        }
+        let mut fake = vec![false; m];
+        let mut any_fake = false;
 
         loop {
             let active: Vec<usize> = (0..m).filter(|&i| !fake[i]).collect();
             let tied: Vec<usize> = active
                 .iter()
                 .copied()
-                .filter(|&i| match self.stereo[i] {
-                    Stereo::Parity { ligands, .. } => {
-                        let s = ligands.map(map_const_site);
-                        (0..4).any(|a| (a + 1..4).any(|b| s[a] == s[b]))
-                    }
-                    Stereo::Coordination { ligands, len, .. } => {
-                        let mut s = [RankedSite::Vacancy; 6];
-                        for (slot, &l) in s[..len].iter_mut().zip(&ligands[..len]) {
-                            *slot = map_const_site(l);
-                        }
-                        !distinct_sites(&s[..len])
-                    }
-                    Stereo::DoubleBond { ends, .. } => ends.iter().any(|&end| {
-                        let partner = if end == ends[0] { ends[1] } else { ends[0] };
-                        let nbrs: Vec<usize> = self
-                            .csr
-                            .neighbors(end)
-                            .iter()
-                            .filter(|&&(_, v)| v != partner)
-                            .map(|&(_, v)| self.refined_colors[v])
-                            .collect();
-                        nbrs.len() >= 2 && nbrs[0] == nbrs[1]
-                    }),
-                })
+                .filter(|&i| self.element_has_tied_colors(i))
                 .collect();
             if tied.is_empty() {
                 break;
             }
             let sym = self.compute_sym(&active);
-            let mut counts = vec![0usize; self.refined_hashes.len()];
-            for &c in &self.refined_colors {
-                counts[c] += 1;
-            }
             let mut newly_fake = Vec::new();
             for &i in &tied {
-                if self.is_element_fake(i, &active, &sym, &counts) {
+                if self.is_element_fake(i, &active, &sym) {
                     newly_fake.push(i);
                 }
             }
             if newly_fake.is_empty() {
                 break;
             }
+            any_fake = true;
             for i in newly_fake {
                 fake[i] = true;
             }
         }
-        fake
+        if any_fake {
+            fake
+        } else {
+            Vec::new()
+        }
     }
 
-    fn is_element_fake(
-        &self,
-        index: usize,
-        active: &[usize],
-        sym: &SymmetryGroup,
-        counts: &[usize],
-    ) -> bool {
+    fn is_element_fake(&self, index: usize, active: &[usize], sym: &SymmetryGroup) -> bool {
         let target = &self.stereo[index];
         let (a0, a1) = target.anchor_atoms();
-        let mut domain_sizes: Vec<usize> = self.refined_colors.iter().map(|&c| counts[c]).collect();
+        let mut domain_sizes: Vec<usize> = self
+            .refined_colors
+            .iter()
+            .map(|&c| self.color_hist[c].1)
+            .collect();
         domain_sizes[a0] = if a1.is_some() { 2 } else { 1 };
         let plan = plan_query_order(&self.csr, &domain_sizes);
 
@@ -1166,6 +1449,9 @@ fn build_triggers(
     stereo: &[Stereo],
     indices: &[usize],
 ) -> (Vec<StereoTrigger>, Vec<Vec<usize>>) {
+    if indices.is_empty() {
+        return (Vec::new(), Vec::new());
+    }
     let mut triggers = Vec::with_capacity(indices.len());
     let mut by_vertex = vec![Vec::new(); n];
     for &idx in indices {
@@ -1192,8 +1478,20 @@ struct ExactMatchSpec<'a> {
 }
 
 impl<'a> ExactMatchSpec<'a> {
-    fn new(q: &'a Folded, t: &'a Folded, q_real: &[usize], t_fake: &'a [bool]) -> Self {
-        let (triggers, by_vertex) = build_triggers(q.csr.n, &q.stereo, q_real);
+    fn new(q: &'a Folded, t: &'a Folded, q_fake: &[bool], t_fake: &'a [bool]) -> Self {
+        if q.stereo.is_empty() {
+            return Self {
+                q,
+                t,
+                t_fake,
+                triggers: Vec::new(),
+                by_vertex: Vec::new(),
+            };
+        }
+        let q_real: Vec<usize> = (0..q.stereo.len())
+            .filter(|&i| !is_fake_at(q_fake, i))
+            .collect();
+        let (triggers, by_vertex) = build_triggers(q.csr.n, &q.stereo, &q_real);
         Self {
             q,
             t,
@@ -1206,7 +1504,7 @@ impl<'a> ExactMatchSpec<'a> {
 
 impl EmbeddingSpec for ExactMatchSpec<'_> {
     fn atom_compatible(&self, q: usize, t: usize) -> bool {
-        self.q.refined_colors[q] == self.t.refined_colors[t] && self.q.keys[q] == self.t.keys[t]
+        self.q.refined_colors[q] == self.t.refined_colors[t] && self.q.atom_equal(q, self.t, t)
     }
 
     fn bond_compatible(&self, q_code: u8, t_code: u8) -> bool {
@@ -1214,16 +1512,19 @@ impl EmbeddingSpec for ExactMatchSpec<'_> {
     }
 
     fn step_ok(&self, q: usize, mapping: &[usize]) -> bool {
+        if self.by_vertex.is_empty() {
+            return true;
+        }
         for &trig_idx in &self.by_vertex[q] {
             let trig = &self.triggers[trig_idx];
             if trig.req_verts.iter().any(|&v| mapping[v] == usize::MAX) {
                 continue;
             }
             let el = &self.q.stereo[trig.stereo_idx];
-            let Some(&j) = self.t.anchors.get(&el.anchor(|a| mapping[a])) else {
+            let Some(j) = self.t.anchor_get(el.anchor(|a| mapping[a])) else {
                 return false;
             };
-            if self.t_fake[j] || !el.agrees(mapping, &self.t.stereo[j]) {
+            if is_fake_at(self.t_fake, j) || !el.agrees(mapping, &self.t.stereo[j]) {
                 return false;
             }
         }
@@ -1276,7 +1577,7 @@ impl EmbeddingSpec for FakeCheckSpec<'_> {
             return false;
         }
         self.mol.refined_colors[q] == self.mol.refined_colors[t]
-            && self.mol.keys[q] == self.mol.keys[t]
+            && self.mol.atom_equal(q, self.mol, t)
     }
 
     fn bond_compatible(&self, q_code: u8, t_code: u8) -> bool {
@@ -1284,13 +1585,16 @@ impl EmbeddingSpec for FakeCheckSpec<'_> {
     }
 
     fn step_ok(&self, q: usize, mapping: &[usize]) -> bool {
+        if self.by_vertex.is_empty() {
+            return true;
+        }
         for &trig_idx in &self.by_vertex[q] {
             let trig = &self.triggers[trig_idx];
             if trig.req_verts.iter().any(|&v| mapping[v] == usize::MAX) {
                 continue;
             }
             let el = &self.mol.stereo[trig.stereo_idx];
-            let Some(&j) = self.mol.anchors.get(&el.anchor(|a| mapping[a])) else {
+            let Some(j) = self.mol.anchor_get(el.anchor(|a| mapping[a])) else {
                 return false;
             };
             if !self.is_active[j] {
@@ -1313,79 +1617,96 @@ impl EmbeddingSpec for FakeCheckSpec<'_> {
     }
 }
 
-/// Stable code of an atom: its own properties, then its folded twins in sorted order.
-fn atom_code(key: &AtomKey) -> u64 {
-    let twins = key
-        .twins
-        .iter()
-        .flat_map(|(twin, order)| [atom_code(twin), order_code(*order, true)]);
-    fnv1a(
-        [
-            u64::from(key.atomic_number),
-            u64::from(key.isotope),
-            // sign-extend, like the fingerprints
-            i64::from(key.charge).cast_unsigned(),
-            key.hydrogens as u64,
-            u64::from(key.aromatic),
-            key.twins.len() as u64,
-        ]
-        .into_iter()
-        .chain(twins),
-    )
+/// Fast ephemeral atom hash used by `Folded` (never persisted to disk).
+#[inline]
+fn fast_atom_code(base: AtomBase, twins: &[(AtomBase, u8)]) -> u64 {
+    let mut h = mix_word(base.packed(), twins.len() as u64);
+    for &(twin_base, twin_bond) in twins {
+        h = mix_word(h, twin_base.packed());
+        h = mix_word(h, u64::from(twin_bond));
+    }
+    mix64(h)
 }
 
 // explicit codes, so reordering BondOrder cannot change stored keys
-fn order_code(order: BondOrder, donor: bool) -> u64 {
-    match order {
-        BondOrder::Single => 1,
-        BondOrder::Double => 2,
-        BondOrder::Triple => 3,
-        BondOrder::Aromatic => 4,
-        BondOrder::Dative if donor => 5,
-        BondOrder::Dative => 6,
+#[inline]
+fn order_code_from_pack(packed: u8) -> u64 {
+    match packed >> 1 {
+        0 => 1,
+        1 => 2,
+        2 => 3,
+        3 => 4,
+        4 if (packed & 1) != 0 => 5,
+        _ => 6,
     }
 }
 
+/// Stable FNV-1a atom hash matching stored `.key` index files (`VERSION = 1`).
+fn stable_atom_code(base: AtomBase, twins: &[(AtomBase, u8)]) -> u64 {
+    let twins_iter = twins.iter().flat_map(|&(twin_base, twin_bond)| {
+        [
+            stable_atom_code(twin_base, &[]),
+            order_code_from_pack(twin_bond),
+        ]
+    });
+    fnv1a(
+        [
+            u64::from(base.atomic_number),
+            u64::from(base.isotope),
+            // sign-extend, like the fingerprints
+            i64::from(base.charge).cast_unsigned(),
+            u64::from(base.hydrogens),
+            u64::from(base.aromatic),
+            twins.len() as u64,
+        ]
+        .into_iter()
+        .chain(twins_iter),
+    )
+}
+
 impl Molecule {
+    fn folded_components(&self) -> Result<&[Folded], ExactMatchError> {
+        let cached = self
+            .exact_cache
+            .get_or_init(|| Arc::new(Folded::components(self)));
+        cached.as_ref().as_deref().map_err(|error| *error)
+    }
+
     /// A 64-bit key that molecules `exact_match` calls the same always share, whatever
     /// their stereo. Atom codes are refined from their neighbours' codes until that splits
     /// no more atoms, and the key hashes the sorted codes. It depends neither on atom order
     /// nor on the Rust version, so it can be stored.
     pub fn exact_key(&self) -> u64 {
-        let (graph, _, datives) = Folded::fold(self);
-        let mut codes: Vec<u64> = graph.node_weights().map(atom_code).collect();
-        let distinct = |codes: &[u64]| {
-            let mut sorted = codes.to_vec();
-            sorted.sort_unstable();
-            sorted.dedup();
-            sorted.len()
+        let raw = fold_raw(self);
+        let n = raw.n;
+        let mut codes: Vec<u64> = (0..n)
+            .map(|u| stable_atom_code(raw.keys[u], raw.twins_of(u)))
+            .collect();
+        let mut scratch = Vec::with_capacity(n);
+        let distinct_len = |scratch: &mut Vec<u64>, values: &[u64]| {
+            scratch.clear();
+            scratch.extend_from_slice(values);
+            scratch.sort_unstable();
+            scratch.dedup();
+            scratch.len()
         };
-        let mut classes = distinct(&codes);
+        let mut classes = distinct_len(&mut scratch, &codes);
+        let mut next = vec![0u64; n];
+        let mut neighbours: Vec<(u64, u64)> = Vec::with_capacity(8);
         loop {
-            let next: Vec<u64> = graph
-                .node_indices()
-                .map(|node| {
-                    let mut neighbours: Vec<(u64, u64)> = graph
-                        .edges(node)
-                        .map(|edge| {
-                            let other = if edge.source() == node {
-                                edge.target()
-                            } else {
-                                edge.source()
-                            };
-                            let donor = datives.contains(&(node.index(), other.index()));
-                            (order_code(*edge.weight(), donor), codes[other.index()])
-                        })
-                        .collect();
-                    neighbours.sort_unstable();
-                    fnv1a(
-                        std::iter::once(codes[node.index()])
-                            .chain(neighbours.into_iter().flat_map(|(bond, code)| [bond, code])),
-                    )
-                })
-                .collect();
-            let next_classes = distinct(&next);
-            codes = next;
+            for u in 0..n {
+                neighbours.clear();
+                for &(packed, v) in &raw.edges[raw.offsets[u]..raw.offsets[u + 1]] {
+                    neighbours.push((order_code_from_pack(packed), codes[v]));
+                }
+                neighbours.sort_unstable();
+                next[u] = fnv1a(
+                    std::iter::once(codes[u])
+                        .chain(neighbours.iter().flat_map(|&(bond, code)| [bond, code])),
+                );
+            }
+            std::mem::swap(&mut codes, &mut next);
+            let next_classes = distinct_len(&mut scratch, &codes);
             // refining never merges classes, short of a hash collision
             if next_classes <= classes {
                 break;
@@ -1402,17 +1723,20 @@ impl Molecule {
     /// and dative direction, and tetrahedral, allene and double-bond stereo must agree.
     /// Atom classes are labels, so they are ignored.
     pub fn exact_match(&self, other: &Molecule) -> Result<bool, ExactMatchError> {
-        let query = Folded::components(self)?;
-        let mut target: Vec<Option<Folded>> =
-            Folded::components(other)?.into_iter().map(Some).collect();
+        let query = self.folded_components()?;
+        let target = other.folded_components()?;
         if query.len() != target.len() {
             return Ok(false);
         }
+        if query.len() == 1 {
+            return Ok(query[0].matches(&target[0]));
+        }
+        let mut used = vec![false; target.len()];
         // the first alike target component will do: being the same is an equivalence
-        'parts: for part in &query {
-            for slot in &mut target {
-                if slot.as_ref().map(|other| part.matches(other)).transpose()? == Some(true) {
-                    *slot = None;
+        'parts: for part in query {
+            for (slot_idx, other_part) in target.iter().enumerate() {
+                if !used[slot_idx] && part.matches(other_part) {
+                    used[slot_idx] = true;
                     continue 'parts;
                 }
             }

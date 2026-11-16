@@ -1,9 +1,13 @@
 use crate::model::atom::Atom;
 use crate::model::bond::Bond;
+use crate::model::exact_match::{ExactMatchError, Folded};
 use petgraph::stable_graph::{EdgeIndex, NodeIndex, StableGraph};
 use petgraph::visit::EdgeRef;
 use petgraph::Undirected;
 use std::collections::BTreeSet;
+use std::sync::{Arc, OnceLock};
+
+type ExactCache = OnceLock<Arc<Result<Vec<Folded>, ExactMatchError>>>;
 
 #[derive(Clone, Default)]
 pub struct Molecule {
@@ -17,6 +21,7 @@ pub struct Molecule {
     // them as written, by node and edge index.
     pub(crate) input_aromatic: Vec<bool>,
     pub(crate) input_orders: Vec<crate::model::bond::BondOrder>,
+    pub(crate) exact_cache: ExactCache,
 }
 
 impl Molecule {
@@ -38,10 +43,12 @@ impl Molecule {
     }
 
     pub(crate) fn add_atom(&mut self, atom: Atom) -> NodeIndex {
+        self.exact_cache.take();
         self.graph.add_node(atom)
     }
 
     pub(crate) fn add_bond(&mut self, atom1: NodeIndex, atom2: NodeIndex, bond: Bond) -> EdgeIndex {
+        self.exact_cache.take();
         self.graph.add_edge(atom1, atom2, bond)
     }
 
